@@ -9,7 +9,6 @@ black = "*"
 pytest = "*"
 
 [packages]
-gensim = "*"
 hyperhyper = {editable = true,path = "."}
 pytest = "*"
 

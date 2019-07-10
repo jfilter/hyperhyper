@@ -1,40 +1,22 @@
-import os
 import random
 from collections import Counter, defaultdict
-from math import fabs, sqrt
+from math import fabs, sqrt, ceil
+import logging
 
+from array import array
+
+import math
 import numpy as np
 from gensim.utils import SaveLoad
 from joblib import Parallel, delayed
-from scipy.sparse import csr_matrix, dok_matrix
+from scipy.sparse import csr_matrix, dok_matrix, coo_matrix
 from tqdm import tqdm
-
-from .utils import map_chunks
-
-num_cpu = os.cpu_count()
+import concurrent.futures
 
 
-def to_count_matrix(pair_counts, vocab_size):
-    """
-    Reads the counts into a sparse matrix (CSR) from the count-word-context textual format.
-    """
-    num_words = vocab_size + 1  # for UKN
+from .utils import chunks
 
-    counts = csr_matrix((num_words, num_words), dtype=np.float32)
-    tmp_counts = dok_matrix((num_words, num_words), dtype=np.float32)
-    update_threshold = 100000
-    i = 0
-    for k, v in tqdm(pair_counts.items(), desc="transform counts to matrix"):
-        # increase by 1 because the token for unknown words is -1
-        tmp_counts[k[0] + 1, k[1] + 1] = v
-        i += 1
-        if i == update_threshold:
-            counts = counts + tmp_counts.tocsr()
-            tmp_counts = dok_matrix((num_words, num_words), dtype=np.float32)
-            i = 0
-
-    counts = counts + tmp_counts.tocsr()
-    return counts
+logger = logging.getLogger(__name__)
 
 
 class PairCounts(SaveLoad):
@@ -49,6 +31,44 @@ class PairCounts(SaveLoad):
     def items(self):
         return self.counter.items()
 
+    def __str__(self):
+        return str(self.counter)
+
+
+def to_count_matrix(pair_counts, vocab_size):
+    """
+    Reads the counts into a sparse matrix (CSR) from the count-word-context textual format.
+    """
+    cols = []
+    rows = []
+    data = []
+    for k, v in tqdm(pair_counts.items(), desc="transform counts to matrix"):
+        rows.append(k[0])
+        cols.append(k[1])
+        data.append(v)
+    # why is float32 so important?
+    count_matrix = coo_matrix(
+        (data, (rows, cols)), shape=(vocab_size + 1, vocab_size + 1), dtype=np.float32
+    )
+    logger.info(f"num non-zeros: {count_matrix.count_nonzero()}")
+    return count_matrix
+
+
+def count_pars_map(array, fun, num_chunks=100, chunk_size=None, desc=None):
+    if chunk_size is None:
+        # default to 100 chunks
+        chunk_size = math.ceil(len(array) / num_chunks)
+
+    total = math.ceil(len(array) / chunk_size)
+    array = chunks(array, chunk_size)
+
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        res = defaultdict(int)
+        for x in tqdm(executor.map(fun, array, chunksize=1), desc=desc, total=total):
+            for key, value in x.items():
+                res[key] += value
+    return res
+
 
 def iterate_tokens(
     tokens,
@@ -56,24 +76,24 @@ def iterate_tokens(
     dynamic_window,
     weighted_window,
     delete_oov,
-    subsample_prob,
-    subsample_deter,
-    subsampler,
+    subsampler_prob,
+    unkown_id,
 ):
     if delete_oov:
-        tokens = [t for t in tokens if t != -1]  # -1 is the OOV token id
+        tokens = [t for t in tokens if t != unkown_id]
 
-    if subsample_prob:
+    if not subsampler_prob is None:
         tokens = [
-            t if t not in subsampler or random.random() <= subsampler[t] else None
+            t
+            if t not in subsampler_prob or random.random() <= subsampler_prob[t]
+            else None
             for t in tokens
         ]
 
     len_tokens = len(tokens)
-    pairs = []
+    res = []
     for i, tok in enumerate(tokens):
         if tok is not None:
-            # This is described differently in the paper. However, on scale the outcome should be the same. Instead of weight
             if dynamic_window:
                 offset = random.randint(1, window)
             else:
@@ -91,10 +111,37 @@ def iterate_tokens(
                         count = (window + 1 - distance) / window
                     else:
                         count = 1
-                    if subsample_deter:
-                        count = subsampler[tok] * subsampler[tokens[j]] * count
-                    pairs.append((tok, tokens[j], count))
-    return pairs
+                    res.append((tok, tokens[j], count))
+    return res
+
+
+class CountPairsClosure(object):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+    def __call__(self, texts):
+
+        counter = defaultdict(int)
+        bla = []
+        for t in texts:
+            bla.append(
+                list(
+                    iterate_tokens(
+                        t,
+                        self.window,
+                        self.dynamic_window,
+                        self.weighted_window,
+                        self.delete_oov,
+                        self.subsampler_prob,
+                        self.vocab_size,  # <UKN> id
+                    )
+                )
+            )
+
+        for b in bla:
+            for pair in b:
+                counter[pair[0], pair[1]] += pair[2]
+        return counter
 
 
 def count_pairs(
@@ -107,7 +154,7 @@ def count_pairs(
     subsample_deter=False,
     subsample_factor=None,  # defaults later on
     seed=1312,
-    n_jobs=1,
+    num_chunks=1000,
 ):
     if dynamic_window and weighted_window:
         raise ValueError("Dynamic and weighted window options are exclusive!")
@@ -116,54 +163,51 @@ def count_pairs(
 
     random.seed(seed)
 
-    subsampler = None
-    if subsample_prob or subsample_deter:
+    subsampler_prob = None
+    if subsample_prob:
         # original implementation
 
         if subsample_prob:
             if subsample_factor is None:
-                subsampler = 1e-5
-            subsampler *= corpus.size
-            subsampler = {
-                word: 1 - sqrt(subsampler / count)
-                for word, count in corpus.vocab.items()
-                if count > subsampler
+                subsample_factor = 1e-5
+            subsampler_prob = subsample_factor * corpus.size
+            subsampler_prob = {
+                word: 1 - sqrt(subsampler_prob / count)
+                for word, count in corpus.counts.items()
+                if count > subsampler_prob
             }
-        else:
-            if subsample_factor is None:
-                subsampler = 1e-4
-            subsampler *= corpus.size
-            subsampler = defaultdict(
-                lambda: 1,
-                {
-                    word: sqrt(subsampler / count)
-                    for word, count in corpus.vocab.items()
-                    if count > subsampler
-                },
-            )
 
-    # map
-    def fun(texts):
-        return [
-            iterate_tokens(
-                t,
-                window,
-                dynamic_window,
-                weighted_window,
-                delete_oov,
-                subsample_prob,
-                subsample_deter,
-                subsampler,
-            )
-            for t in texts
-        ]
+    fun = CountPairsClosure(
+        window=window,
+        dynamic_window=dynamic_window,
+        weighted_window=weighted_window,
+        delete_oov=delete_oov,
+        subsampler_prob=subsampler_prob,
+        vocab_size=corpus.vocab.size,
+    )
 
-    results = map_chunks(corpus.texts, fun, desc="generating pairs")
+    count_dic = count_pars_map(
+        corpus.texts, fun, desc="generating pairs", num_chunks=num_chunks
+    )
+    count_matrix = to_count_matrix(count_dic, corpus.vocab.size)
 
-    # reduce
-    counter = PairCounts()
-    for r in tqdm(results, desc="counting pairs"):
-        for p in r:
-            counter[(p[0], p[1])] += p[2]
+    # down sample in a deterministic way
+    if subsample_deter:
+        if subsample_factor is None:
+            subsample_factor = 1e-4
+        subsampler = subsample_factor * corpus.size
+        subsampler = defaultdict(
+            lambda: 1,
+            {
+                word: sqrt(subsampler / count)
+                for word, count in corpus.counts.items()
+                if count > subsampler
+            },
+        )
+        # coo for interation but access with csr
+        cx = count_matrix
+        count_matrix = count_matrix.tocsr()
+        for i, j, value in zip(cx.row, cx.col, cx.data):
+            count_matrix[(i, j)] = subsampler[i] * subsampler[j] * value
 
-    return to_count_matrix(counter, corpus.vocab.size)
+    return count_matrix.tocsr()

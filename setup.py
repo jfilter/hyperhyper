@@ -22,6 +22,11 @@ setup(
     license="MIT",
     packages=["hyperhyper"],
     classifiers=classifiers,
-    install_requires=["joblib", "tqdm", "gensim"],
+    install_requires=[
+        "joblib",
+        "tqdm",
+        "gensim",
+        "importlib_resources ; python_version<'3.7'",
+    ],
 )
 

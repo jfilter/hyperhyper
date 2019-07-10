@@ -25,4 +25,11 @@ def test_corpus():
     corpus = hyperhyper.Corpus.from_texts(texts)
     assert corpus.size == 2
     assert corpus.counts[corpus.vocab.token2id["wikipedia"]] > 0
+    assert corpus.vocab.token2id["wikipedia"] == corpus.vocab.tokens.index("wikipedia")
 
+    keys = corpus.vocab.token2id.keys()
+    print(len(keys))
+
+    for k in keys:
+        i = corpus.vocab.token2id[k]
+        assert i < len(keys)
