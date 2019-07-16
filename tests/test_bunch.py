@@ -28,10 +28,10 @@ def corpus():
 
 def test_bunch(corpus):
     bunch = hyperhyper.Bunch("test_bunch", corpus, force_overwrite=True)
-    pmi_matrix = bunch.pmi()
+    pmi_matrix, _ = bunch.pmi()
     bunch.eval_sim(pmi_matrix)
-    svd_matrix = bunch.svd(dim=2)
-    svd_matrix = bunch.svd(dim=2, keyed_vector=True)
+    svd_matrix, _ = bunch.svd(dim=2)
+    svd_matrix, _ = bunch.svd(dim=2, keyed_vector=True)
     print(svd_matrix.most_similar("english"))
 
     assert pmi_matrix.m.count_nonzero() > 0

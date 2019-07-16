@@ -23,6 +23,7 @@ setup(
     packages=["hyperhyper"],
     classifiers=classifiers,
     install_requires=[
+        "dataset",
         "joblib",
         "tqdm",
         "gensim",

@@ -8,12 +8,16 @@ from gensim.models.keyedvectors import WordEmbeddingsKeyedVectors
 from . import pair_counts, pmi, svd, evaluation
 from .dataset import Corpus
 from .utils import load_arrays, load_matrix, save_arrays, save_matrix, delete_folder
+from .experiment import record
+import dataset
+
 
 logger = logging.getLogger(__name__)
 
 
 class Bunch:
     def __init__(self, path, corpus=None, force_overwrite=False):
+        self.db = None
         self.path = Path(path)
 
         if force_overwrite:
@@ -25,6 +29,12 @@ class Bunch:
             self.path.mkdir(parents=True, exist_ok=True)
             self.corpus = corpus
             self.corpus.save(str(self.path / "corpus.pkl"))
+
+    def get_db(self):
+        if self.db is None:
+            # connecting to a SQLite database
+            self.db = dataset.connect(f"sqlite:///{self.path}/results.db")
+        return self.db
 
     def dict_to_path(self, folder, dict):
         filename = "_".join([f"{k}_{v}" for k, v in dict.items()]).lower()
@@ -66,11 +76,24 @@ class Bunch:
 
         return pmi_matrix
 
-    def pmi(self, neg=1, cds=0.75, pair_args={}, keyed_vectors=False, **kwargs):
+    @record
+    def pmi(
+        self,
+        neg=1,
+        cds=0.75,
+        pair_args={},
+        keyed_vectors=False,
+        evaluate=True,
+        **kwargs,
+    ):
         m = self.pmi_matrix(cds, pair_args, **kwargs)
         embd = pmi.PPMIEmbedding(m, neg=neg)
+        if evaluate:
+            eval_results = self.eval_sim(embd)
         if keyed_vectors:
             return self.to_keyed_vectors(embd.m.todense(), m.shape[0])
+        if evaluate:
+            return embd, eval_results
         return embd
 
     def svd_matrix(
@@ -105,6 +128,7 @@ class Bunch:
         save_arrays(svd_path, ut, s)
         return ut, s
 
+    @record
     def svd(
         self,
         dim=500,
@@ -115,12 +139,18 @@ class Bunch:
         impl_args={},
         pair_args={},
         keyed_vector=False,
+        evaluate=True,
         **kwargs,
     ):
         ut, s = self.svd_matrix(impl, impl_args, dim, neg, cds, pair_args, **kwargs)
         embedding = svd.SVDEmbedding(ut, s, eig=eig)
+
+        if evaluate:
+            eval_results = self.eval_sim(embedding)
         if keyed_vector:
-            return self.to_keyed_vectors(embedding.m, dim)
+            embedding = self.to_keyed_vectors(embedding.m, dim)
+        if evaluate:
+            return embedding, eval_results
         return embedding
 
     def to_keyed_vectors(self, embd_matrix, dim):
@@ -137,3 +167,4 @@ class Bunch:
         return evaluation.embedding_eval_sim(
             embd, self.corpus.vocab.token2id, self.corpus.preproc_fun, **kwargs
         )
+

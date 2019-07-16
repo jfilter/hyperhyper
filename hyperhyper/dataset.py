@@ -82,7 +82,10 @@ class Corpus(SaveLoad):
         self.vocab_size = vocab.size
         self.preproc_fun = preproc_fun
 
-        self.texts = map_pool(texts, TransformToIndicesClosure(self))
+        # parallel is slower (due to large vocab?)
+        # self.texts = map(texts, TransformToIndicesClosure(self))
+        toIndices = TransformToIndicesClosure(self)
+        self.texts = [toIndices(t) for t in tqdm(texts, desc="transform to indices")]
 
         self.size = len(self.texts)
         frequency = defaultdict(int)

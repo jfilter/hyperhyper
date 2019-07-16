@@ -13,6 +13,9 @@ from scipy.sparse import csr_matrix, dok_matrix, coo_matrix
 from tqdm import tqdm
 import concurrent.futures
 
+from concurrent import futures
+
+import os
 
 from .utils import chunks
 
@@ -42,31 +45,55 @@ def to_count_matrix(pair_counts, vocab_size):
     cols = []
     rows = []
     data = []
-    for k, v in tqdm(pair_counts.items(), desc="transform counts to matrix"):
+    for k, v in pair_counts.items():
         rows.append(k[0])
         cols.append(k[1])
         data.append(v)
     # why is float32 so important?
+    # +1 for UNK
     count_matrix = coo_matrix(
         (data, (rows, cols)), shape=(vocab_size + 1, vocab_size + 1), dtype=np.float32
     )
-    logger.info(f"num non-zeros: {count_matrix.count_nonzero()}")
+    # logger.info(f"num non-zeros: {count_matrix.count_nonzero()}")
     return count_matrix
 
 
-def count_pars_map(array, fun, num_chunks=100, chunk_size=None, desc=None):
+def count_pars_map(array, fun, vs, num_chunks=100, chunk_size=None, desc=None):
     if chunk_size is None:
         # default to 100 chunks
         chunk_size = math.ceil(len(array) / num_chunks)
 
     total = math.ceil(len(array) / chunk_size)
-    array = chunks(array, chunk_size)
+    res = None
 
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        res = defaultdict(int)
-        for x in tqdm(executor.map(fun, array, chunksize=1), desc=desc, total=total):
-            for key, value in x.items():
-                res[key] += value
+    with futures.ProcessPoolExecutor() as executor:
+        # A dictionary which will contain a list the future info in the key, and the filename in the value
+        jobs = {}
+
+        files_left = total
+        files_iter = iter(chunks(array, chunk_size))
+        MAX_JOBS_IN_QUEUE = os.cpu_count() * 2  # heuristic ;)
+
+        with tqdm(total=total, desc="generating pairs") as pbar:
+            while files_left:
+                for this_file in files_iter:
+                    job = executor.submit(fun, this_file)
+                    jobs[job] = this_file
+                    if len(jobs) > MAX_JOBS_IN_QUEUE:
+                        break  # limit the job submission for now job
+
+                # Get the completed jobs whenever they are done
+                for job in futures.as_completed(jobs):
+                    files_left -= 1
+                    pbar.update(1)
+                    # print(str(total - files_left) + "/" + str(total))
+                    m = job.result()
+                    if res is None:
+                        res = m
+                    else:
+                        res += m
+
+                    del jobs[job]
     return res
 
 
@@ -120,28 +147,19 @@ class CountPairsClosure(object):
         self.__dict__.update(kwargs)
 
     def __call__(self, texts):
-
         counter = defaultdict(int)
-        bla = []
         for t in texts:
-            bla.append(
-                list(
-                    iterate_tokens(
-                        t,
-                        self.window,
-                        self.dynamic_window,
-                        self.weighted_window,
-                        self.delete_oov,
-                        self.subsampler_prob,
-                        self.vocab_size,  # <UKN> id
-                    )
-                )
-            )
-
-        for b in bla:
-            for pair in b:
+            for pair in iterate_tokens(
+                t,
+                self.window,
+                self.dynamic_window,
+                self.weighted_window,
+                self.delete_oov,
+                self.subsampler_prob,
+                self.vocab_size,  # <UKN> id
+            ):
                 counter[pair[0], pair[1]] += pair[2]
-        return counter
+        return to_count_matrix(counter, self.vocab_size)
 
 
 def count_pairs(
@@ -186,10 +204,13 @@ def count_pairs(
         vocab_size=corpus.vocab.size,
     )
 
-    count_dic = count_pars_map(
-        corpus.texts, fun, desc="generating pairs", num_chunks=num_chunks
+    count_matrix = count_pars_map(
+        corpus.texts,
+        fun,
+        corpus.vocab.size,
+        desc="generating pairs",
+        num_chunks=num_chunks,
     )
-    count_matrix = to_count_matrix(count_dic, corpus.vocab.size)
 
     # down sample in a deterministic way
     if subsample_deter:
@@ -205,9 +226,11 @@ def count_pairs(
             },
         )
         # coo for interation but access with csr
-        cx = count_matrix
+        cx = count_matrix.tocsr().tocoo()
         count_matrix = count_matrix.tocsr()
-        for i, j, value in zip(cx.row, cx.col, cx.data):
+        for i, j, value in tqdm(
+            zip(cx.row, cx.col, cx.data), desc="subsampling deterministic"
+        ):
             count_matrix[(i, j)] = subsampler[i] * subsampler[j] * value
 
     return count_matrix.tocsr()
