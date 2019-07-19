@@ -15,6 +15,7 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 
 from .utils import map_pool
+from .preprocessing import texts_to_sents
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ class Corpus(SaveLoad):
         return Corpus.from_texts(lines, **kwargs)
 
     @staticmethod
-    def from_texts(
+    def from_sents(
         texts,
         no_below=0,
         no_above=1,
@@ -120,3 +121,9 @@ class Corpus(SaveLoad):
             )
         corpus = Corpus(vocab, texts, preproc_func)
         return corpus
+
+    @staticmethod
+    def from_texts(texts, preproc_func=texts_to_sents, preproc_single=True, **kwargs):
+        return Corpus.from_sents(
+            texts, preproc_func=preproc_func, preproc_single=preproc_single, **kwargs
+        )

@@ -22,7 +22,7 @@ texts = [some_text1, some_text2]
 
 
 def test_corpus():
-    corpus = hyperhyper.Corpus.from_texts(texts)
+    corpus = hyperhyper.Corpus.from_sents(texts)
     assert corpus.size == 2
     assert corpus.counts[corpus.vocab.token2id["wikipedia"]] > 0
     assert corpus.vocab.token2id["wikipedia"] == corpus.vocab.tokens.index("wikipedia")
@@ -36,8 +36,6 @@ def test_corpus():
 
 
 def test_sent_split():
-    corpus = hyperhyper.Corpus.from_texts(
-        texts, preproc_func=hyperhyper.texts_to_sents, preproc_single=True
-    )
+    corpus = hyperhyper.Corpus.from_texts(texts)
     print(corpus.texts)
     assert corpus.size > 2

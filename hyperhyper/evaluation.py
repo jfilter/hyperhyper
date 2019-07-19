@@ -48,6 +48,16 @@ def eval_similarity(vectors, lang="en", **kwargs):
     return score
 
 
+def to_item(li):
+    if isinstance(li, list):
+        if len(li) == 0:
+            return None
+        if len(li) == 1:
+            return li[0]
+        return to_item(li[0])
+    return li
+
+
 # non keyed vectors (used for PPMI)
 def embedding_eval_sim(vectors, token2id, preproc_fun, lang="en"):
     line_counts = []
@@ -63,15 +73,12 @@ def embedding_eval_sim(vectors, token2id, preproc_fun, lang="en"):
             x = preproc_fun(x)
             y = preproc_fun(y)
 
-            if isinstance(x, list):
-                if len(x) == 0:
-                    continue
-                x = x[0]
+            x = to_item(x)
+            y = to_item(y)
 
-            if isinstance(y, list):
-                if len(y) == 0:
-                    continue
-                y = y[0]
+            # skip over OOV
+            if x is None or y is None:
+                continue
 
             if x in token2id and y in token2id:
                 results.append((vectors.similarity(token2id[x], token2id[y]), sim))
