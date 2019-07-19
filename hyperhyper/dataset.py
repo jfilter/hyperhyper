@@ -44,22 +44,6 @@ class Vocab(Dictionary):
         return [tup[0] for tup in sorted(self.token2id.items(), key=lambda x: x[1])]
 
 
-# def create(x):
-#     def to_idx(texts):
-#         if x.vocab_size <= 65535:
-#             size = "H"
-#         else:
-#             size = "L"
-#         return [
-#             array(size, x.vocab.doc2idx(t, x.vocab_size))
-#             for t in texts
-
-#             # for t in tqdm(texts, desc="converting texts to indices")
-#         ]
-
-#     return to_idx
-
-
 # a closure that is pickable
 # <UNK> is the last ID (thus vocab_size)
 # https://docs.python.org/3/library/array.html
@@ -109,7 +93,6 @@ class Corpus(SaveLoad):
         logger.info("done reading file")
         return Corpus.from_texts(lines, **kwargs)
 
-    # TODO: tokenzation?
     @staticmethod
     def from_texts(
         texts,
@@ -119,12 +102,14 @@ class Corpus(SaveLoad):
         keep_tokens=None,
         vocab=None,
         preproc_func=default_preprocess_string,
+        preproc_single=False,
     ):
         assert preproc_func is not None
-        texts = map_pool(texts, preproc_func, desc="preprocessing texts")
-        # texts = Parallel(n_jobs=num_cpu)(
-        #     delayed(preproc_func)(t) for t in tqdm(texts, desc="preprocessing texts")
-        # )
+        if preproc_single:
+            texts = preproc_func(texts)
+        else:
+            texts = map_pool(texts, preproc_func, desc="preprocessing texts")
+
         if vocab is None:
             vocab = Vocab(
                 texts,

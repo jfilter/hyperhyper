@@ -33,3 +33,11 @@ def test_corpus():
     for k in keys:
         i = corpus.vocab.token2id[k]
         assert i < len(keys)
+
+
+def test_sent_split():
+    corpus = hyperhyper.Corpus.from_texts(
+        texts, preproc_func=hyperhyper.texts_to_sents, preproc_single=True
+    )
+    print(corpus.texts)
+    assert corpus.size > 2

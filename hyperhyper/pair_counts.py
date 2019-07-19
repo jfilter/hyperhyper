@@ -213,6 +213,7 @@ def count_pairs(
     )
 
     # down sample in a deterministic way
+    # TODO: more efficient implemenation
     if subsample_deter:
         if subsample_factor is None:
             subsample_factor = 1e-4
