@@ -1,31 +1,21 @@
 import logging
 import os
+import pickle
+from array import array
 from collections import defaultdict
 from pathlib import Path
-from array import array
-import pickle
 
 from gensim.corpora import Dictionary
-from gensim.parsing.preprocessing import (
-    preprocess_string,
-    strip_non_alphanum,
-    strip_numeric,
-)
 from gensim.utils import SaveLoad
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
-from .utils import map_pool, chunks, to_pickle
-from .preprocessing import texts_to_sents
+from .preprocessing import simple_tokenizer, texts_to_sents
+from .utils import chunks, map_pool, to_pickle
 
 logger = logging.getLogger(__name__)
 
 num_cpu = os.cpu_count()
-
-
-def default_preprocess_string(text):
-    CUSTOM_FILTERS = [lambda x: x.lower(), strip_non_alphanum, strip_numeric]
-    return preprocess_string(text, CUSTOM_FILTERS)
 
 
 class Vocab(Dictionary):
@@ -111,7 +101,7 @@ class Corpus(SaveLoad):
         keep_n=50000,
         keep_tokens=None,
         vocab=None,
-        preproc_func=default_preprocess_string,
+        preproc_func=simple_tokenizer,
         preproc_single=False,
     ):
         assert preproc_func is not None

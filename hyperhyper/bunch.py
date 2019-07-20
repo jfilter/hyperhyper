@@ -6,7 +6,7 @@ import numpy as np
 from gensim.models.keyedvectors import WordEmbeddingsKeyedVectors
 
 from . import pair_counts, pmi, svd, evaluation
-from .dataset import Corpus
+from .corpus import Corpus
 from .utils import load_arrays, load_matrix, save_arrays, save_matrix, delete_folder
 from .experiment import record
 import dataset
