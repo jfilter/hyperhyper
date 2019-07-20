@@ -17,7 +17,7 @@ from concurrent import futures
 
 import os
 
-from .utils import chunks
+from .utils import chunks, read_pickle
 
 logger = logging.getLogger(__name__)
 
@@ -58,23 +58,16 @@ def to_count_matrix(pair_counts, vocab_size):
     return count_matrix
 
 
-def count_pars_map(array, fun, vs, num_chunks=100, chunk_size=None, desc=None):
-    if chunk_size is None:
-        # default to 100 chunks
-        chunk_size = math.ceil(len(array) / num_chunks)
-
-    total = math.ceil(len(array) / chunk_size)
+def count_pars_map(texts_paths, fun):
     res = None
-
     with futures.ProcessPoolExecutor() as executor:
         # A dictionary which will contain a list the future info in the key, and the filename in the value
         jobs = {}
-
-        files_left = total
-        files_iter = iter(chunks(array, chunk_size))
+        files_left = len(texts_paths)
+        files_iter = iter(texts_paths)
         MAX_JOBS_IN_QUEUE = os.cpu_count() * 2  # heuristic ;)
 
-        with tqdm(total=total, desc="generating pairs") as pbar:
+        with tqdm(total=len(texts_paths), desc="generating pairs") as pbar:
             while files_left:
                 for this_file in files_iter:
                     job = executor.submit(fun, this_file)
@@ -86,7 +79,6 @@ def count_pars_map(array, fun, vs, num_chunks=100, chunk_size=None, desc=None):
                 for job in futures.as_completed(jobs):
                     files_left -= 1
                     pbar.update(1)
-                    # print(str(total - files_left) + "/" + str(total))
                     m = job.result()
                     if res is None:
                         res = m
@@ -146,7 +138,8 @@ class CountPairsClosure(object):
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
 
-    def __call__(self, texts):
+    def __call__(self, text_path):
+        texts = read_pickle(text_path)
         counter = defaultdict(int)
         for t in texts:
             for pair in iterate_tokens(
@@ -195,21 +188,16 @@ def count_pairs(
                 if count > subsampler_prob
             }
 
-    fun = CountPairsClosure(
-        window=window,
-        dynamic_window=dynamic_window,
-        weighted_window=weighted_window,
-        delete_oov=delete_oov,
-        subsampler_prob=subsampler_prob,
-        vocab_size=corpus.vocab.size,
-    )
-
     count_matrix = count_pars_map(
         corpus.texts,
-        fun,
-        corpus.vocab.size,
-        desc="generating pairs",
-        num_chunks=num_chunks,
+        CountPairsClosure(
+            window=window,
+            dynamic_window=dynamic_window,
+            weighted_window=weighted_window,
+            delete_oov=delete_oov,
+            subsampler_prob=subsampler_prob,
+            vocab_size=corpus.vocab.size,
+        ),
     )
 
     # down sample in a deterministic way

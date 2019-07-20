@@ -1,14 +1,13 @@
 import concurrent.futures
+import logging
 import math
 import os
-import pathlib
+import pickle
 
 import numpy as np
 from gensim.utils import flatten
 from scipy.sparse import csr_matrix, dok_matrix
 from tqdm import tqdm
-import logging
-
 
 num_cpu = os.cpu_count()
 
@@ -95,3 +94,11 @@ def delete_folder(pth):
             sub.unlink()
     pth.rmdir()
 
+def to_pickle(ob, fn):
+    fn.parent.mkdir(parents=True, exist_ok=True)
+    with open(fn, "wb") as outfile:
+        pickle.dump(ob, outfile)
+
+def read_pickle(fn):
+    with open(fn, "rb") as infile:
+        return pickle.load(infile)

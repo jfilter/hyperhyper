@@ -16,7 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 class Bunch:
-    def __init__(self, path, corpus=None, force_overwrite=False):
+    def __init__(
+        self, path, corpus=None, force_overwrite=False, text_chunk_size=100000
+    ):
         self.db = None
         self.path = Path(path)
 
@@ -28,6 +30,7 @@ class Bunch:
         else:
             self.path.mkdir(parents=True, exist_ok=True)
             self.corpus = corpus
+            self.corpus.texts_to_file(self.path / "texts", text_chunk_size)
             self.corpus.save(str(self.path / "corpus.pkl"))
 
     def get_db(self):
@@ -164,7 +167,7 @@ class Bunch:
         return vectors
 
     def eval_sim(self, embd, **kwargs):
-        return evaluation.embedding_eval_sim(
+        return evaluation.eval_similarity(
             embd, self.corpus.vocab.token2id, self.corpus.preproc_fun, **kwargs
         )
 

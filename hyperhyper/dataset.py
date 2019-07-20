@@ -3,6 +3,7 @@ import os
 from collections import defaultdict
 from pathlib import Path
 from array import array
+import pickle
 
 from gensim.corpora import Dictionary
 from gensim.parsing.preprocessing import (
@@ -14,7 +15,7 @@ from gensim.utils import SaveLoad
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
-from .utils import map_pool
+from .utils import map_pool, chunks, to_pickle
 from .preprocessing import texts_to_sents
 
 logger = logging.getLogger(__name__)
@@ -70,15 +71,23 @@ class Corpus(SaveLoad):
         # parallel is slower (due to large vocab?)
         # self.texts = map(texts, TransformToIndicesClosure(self))
         toIndices = TransformToIndicesClosure(self)
-        self.texts = [toIndices(t) for t in tqdm(texts, desc="transform to indices")]
+        texts = [toIndices(t) for t in tqdm(texts, desc="transform to indices")]
 
-        self.size = len(self.texts)
-        frequency = defaultdict(int)
-        for text in tqdm(self.texts, desc="counting frequency of tokens"):
+        self.size = len(texts)
+        self.counts = defaultdict(int)
+        for text in tqdm(texts, desc="counting frequency of tokens"):
             for token in text:
-                frequency[token] += 1
+                self.counts[token] += 1
+        self.texts = texts
 
-        self.counts = frequency
+    # can't do in init because we don't have a file location yet
+    def texts_to_file(self, dir, text_chunk_size):
+        fns = []
+        for i, c in enumerate(chunks(self.texts, text_chunk_size)):
+            fn = Path(f"{dir}/texts_1{i}.pkl").resolve()
+            to_pickle(c, fn)
+            fns.append(fn)
+        self.texts = fns
 
     @staticmethod
     def from_file(input, limit=None, **kwargs):

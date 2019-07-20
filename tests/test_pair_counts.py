@@ -23,6 +23,7 @@ def corpus():
 
     texts = [some_text1, some_text2]
     c = hyperhyper.Corpus.from_texts(texts)
+    c.texts_to_file("test_bunch/bla", 5)
     return c
 
 
