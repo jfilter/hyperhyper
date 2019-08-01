@@ -1,4 +1,5 @@
 import re
+import os
 
 from gensim.parsing.preprocessing import (
     preprocess_string,
@@ -10,7 +11,7 @@ from tqdm import tqdm
 try:
     import spacy
 except:
-    pass
+    spacy = None
 
 
 def simple_preproc(t):
@@ -32,7 +33,17 @@ def texts_to_sents(texts, model="en_core_web_sm"):
 
     texts = [strip_tags(t) for t in texts]
     results = []
-    nlp = spacy.load(model, disable=["ner"])
+
+    assert spacy is not None, 'please install spacy, i.e., "pip install spacy"'
+
+    try:
+        nlp = spacy.load(model, disable=["ner"])
+    except Exception as e:
+        print(e)
+        print("trying to download model...")
+        os.system("python -m spacy download " + model)
+        nlp = spacy.load(model, disable=["ner"])
+
     for doc in tqdm(nlp.pipe(texts), total=len(texts), desc="texts to sents"):
         for s in doc.sents:
             results.append(
