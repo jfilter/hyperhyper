@@ -24,10 +24,10 @@ setup(
     classifiers=classifiers,
     install_requires=[
         "dataset",
-        "joblib",
         "tqdm",
         "gensim",
         "importlib_resources ; python_version<'3.7'",
     ],
+    extras_require={"full": ["spacy==2.*", "scikit-learn", "matplotlib"]},
 )
 

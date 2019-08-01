@@ -3,13 +3,10 @@ name = "pypi"
 url = "https://pypi.org/simple"
 verify_ssl = true
 
-[dev-packages]
+[packages]
+hyperhyper = {editable = true,extras = ["full"],path = "."}
 pylint = "*"
 black = "*"
-pytest = "*"
-
-[packages]
-hyperhyper = {editable = true,path = "."}
 pytest = "*"
 
 [requires]
