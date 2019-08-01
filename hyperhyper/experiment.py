@@ -1,11 +1,17 @@
 def flatten_dict(prefix, dict):
     for k, v in dict.items():
-        yield {f"{prefix}_{k}": v}
+        yield {f"{prefix}__{k}": v}
+
+
+# TODO: make sure to store byes to boolean?
 
 
 def record(func):
     def wrapper(*args, **kwargs):
         results = func(*args, **kwargs)
+
+        if "evaluate" in kwargs and not kwargs["evaluate"]:
+            return results
 
         # args[0] is self
         table = args[0].get_db()["experiments"]

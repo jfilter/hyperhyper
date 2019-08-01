@@ -3,15 +3,13 @@ from pathlib import Path
 import numpy as np
 from scipy.stats.stats import spearmanr
 
-from . import evaluation_datasets  # the package containing the file
+from . import evaluation_datasets
 
 try:
-    # import importlib.resources as pkg_resources
     from importlib.resources import path
 
 except ImportError:
     # Try backported to PY<37 `importlib_resources`.
-    # import importlib_resources as pkg_resources
     from importlib_resources import path
 
 

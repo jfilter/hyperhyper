@@ -5,12 +5,12 @@ from timeit import default_timer as timer
 import numpy as np
 from gensim.models.keyedvectors import WordEmbeddingsKeyedVectors
 
-from . import pair_counts, pmi, svd, evaluation
-from .corpus import Corpus
-from .utils import load_arrays, load_matrix, save_arrays, save_matrix, delete_folder
-from .experiment import record
 import dataset
 
+from . import evaluation, pair_counts, pmi, svd
+from .corpus import Corpus
+from .experiment import record
+from .utils import delete_folder, load_arrays, load_matrix, save_arrays, save_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,11 @@ class Bunch:
         if force_overwrite:
             delete_folder(self.path)
 
-        if corpus is None and not force_overwrite:
+        if not corpus is None and not force_overwrite:
+            if Path(self.path / "corpus.pkl").is_file():
+                raise ValueError("There is already another corpus file saved. Set `force_overwrite` to True if you want to override it.")
+
+        if corpus is None:
             self.corpus = Corpus.load(str(self.path / "corpus.pkl"))
         else:
             self.path.mkdir(parents=True, exist_ok=True)
@@ -54,7 +58,7 @@ class Bunch:
             logger.info("retrieved already saved pair count")
             return load_matrix(pair_path)
 
-        logger.info("create new pair counts")
+        print("create new pair counts")
         pair_path.parent.mkdir(parents=True, exist_ok=True)
         count_matrix = pair_counts.count_pairs(self.corpus, **kwargs)
         save_matrix(pair_path, count_matrix)
@@ -65,7 +69,7 @@ class Bunch:
         if pmi_path.is_file():
             logger.info("retrieved already saved pmi")
             return load_matrix(pmi_path)
-        logger.info("create new pmi")
+        print("create new pmi")
         counts = self.pair_counts(**pair_args, **kwargs)
 
         start = timer()
@@ -118,7 +122,7 @@ class Bunch:
         if svd_path.is_file():
             logger.info("retrieved already saved svd")
             return load_arrays(svd_path)
-        logger.info("create new svd")
+        print("creating new svd")
         m = self.pmi_matrix(cds, pair_args, **kwargs)
         m = pmi.PPMIEmbedding(m, neg=neg, normalize=False)
 
@@ -170,4 +174,3 @@ class Bunch:
         return evaluation.eval_similarity(
             embd, self.corpus.vocab.token2id, self.corpus.preproc_fun, **kwargs
         )
-

@@ -7,7 +7,6 @@ from pathlib import Path
 
 from gensim.corpora import Dictionary
 from gensim.utils import SaveLoad
-from joblib import Parallel, delayed
 from tqdm import tqdm
 
 from .preprocessing import simple_tokenizer, texts_to_sents
@@ -19,11 +18,12 @@ num_cpu = os.cpu_count()
 
 
 class Vocab(Dictionary):
-    def __init__(self, texts, **kwargs):
+    def __init__(self, texts, filter=True, **kwargs):
         logger.info("creating vocab")
         super().__init__(texts)
-        logger.info("filtering extremes")
-        self.filter_extremes(**kwargs)
+        if filter:
+            logger.info("filtering extremes")
+            self.filter_extremes(**kwargs)
         logger.info("done with vocab")
 
     @property
@@ -50,6 +50,10 @@ class TransformToIndicesClosure(object):
 
     def __call__(self, texts):
         return array(self.size, self.d(texts, self.vocab_size))
+
+
+# TODO: improve Corpus creating for large datasets, i.e., Wikipedia.
+# Don't store all the texts in memory
 
 
 class Corpus(SaveLoad):
@@ -91,7 +95,7 @@ class Corpus(SaveLoad):
         if limit is not None:
             lines = lines[:limit]
         logger.info("done reading file")
-        return Corpus.from_texts(lines, **kwargs)
+        return Corpus.from_sents(lines, **kwargs)
 
     @staticmethod
     def from_sents(
@@ -126,3 +130,7 @@ class Corpus(SaveLoad):
         return Corpus.from_sents(
             texts, preproc_func=preproc_func, preproc_single=preproc_single, **kwargs
         )
+
+    @staticmethod
+    def from_files(base_dir, preproc_func=texts_to_sents, preproc_single=True, **kwargs):
+        pass
