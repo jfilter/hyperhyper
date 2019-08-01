@@ -39,7 +39,7 @@ class PairCounts(SaveLoad):
 
 def to_count_matrix(pair_counts, vocab_size):
     """
-    Reads the counts into a sparse matrix (CSR) from the count-word-context textual format.
+    Transforms the counts into a sparse matrix (CSR).
     """
     cols = []
     rows = []
@@ -209,6 +209,7 @@ def count_pairs(
 
     # down sample in a deterministic way
     if subsample == "deter":
+        # construct array with appropriate factor
         subsample_value = subsample_factor * corpus.size
         subsampler = np.ones(corpus.vocab.size + 1)
 
@@ -217,19 +218,15 @@ def count_pairs(
             if count > subsample_value:
                 subsampler[word] = sqrt(subsample_value / count)
                 num_sub += 1
-        print("sub factor:" + str(num_sub / corpus.vocab.size))
 
-        indices = zip(*count_matrix.nonzero())
-        total = count_matrix.count_nonzero()
+        print(f"subsampling applied to {num_sub / corpus.vocab.size} of the tokens")
 
-        # dense is faster but requires more RAM
-        if low_memory:
-            count_matrix = count_matrix.todok()
-        else:
-            count_matrix = count_matrix.todense()
-
-        for i, j in tqdm(indices, desc="subsampling deterministic", total=total):
-            count_matrix[(i, j)] *= subsampler[i] * subsampler[j]
+        # to 2d matrix
+        subsampler = subsampler.reshape((-1, 1)).dot(subsampler.reshape(1, -1))
+        # elementwise muplication of 2 matrices
+        count_matrix = np.multiply(count_matrix.todense(), subsampler)
+        # had to convert to dense for a minute
+        # TODO: find a low memory alternative?
         count_matrix = csr_matrix(count_matrix)
 
     return count_matrix.tocsr()
