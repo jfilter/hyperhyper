@@ -35,4 +35,5 @@ def test_count(corpus):
 def test_count_subs(corpus):
     pair_c = hyperhyper.count_pairs(corpus, subsample="prob")
     pair_c = hyperhyper.count_pairs(corpus, subsample="deter")
-    pair_c = hyperhyper.count_pairs(corpus, subsample="decay")
+    pair_c = hyperhyper.count_pairs(corpus, subsample="deter", low_memory=True)
+    pair_c = hyperhyper.count_pairs(corpus, dynamic_window="decay")

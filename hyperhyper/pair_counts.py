@@ -211,22 +211,29 @@ def count_pairs(
     if subsample == "deter":
         # construct array with appropriate factor
         subsample_value = subsample_factor * corpus.size
-        subsampler = np.ones(corpus.vocab.size + 1)
+        subsampler = np.ones(corpus.vocab.size + 1, dtype=np.float32)
 
+        logger.info('creating subsampler matrix')
         num_sub = 0
         for word, count in corpus.counts.items():
             if count > subsample_value:
                 subsampler[word] = sqrt(subsample_value / count)
                 num_sub += 1
-
-        print(f"subsampling applied to {num_sub / corpus.vocab.size} of the tokens")
-
-        # to 2d matrix
-        subsampler = subsampler.reshape((-1, 1)).dot(subsampler.reshape(1, -1))
-        # elementwise muplication of 2 matrices
-        count_matrix = np.multiply(count_matrix.todense(), subsampler)
-        # had to convert to dense for a minute
-        # TODO: find a low memory alternative?
-        count_matrix = csr_matrix(count_matrix)
+        if low_memory:
+            # this requires less memory but more time
+            indices = zip(*count_matrix.nonzero())
+            total = count_matrix.count_nonzero()
+            count_matrix = count_matrix.todok()
+            for i, j in tqdm(indices, desc="subsample deterministic (low memory)", total=total):
+                count_matrix[(i, j)] *= subsampler[i] * subsampler[j]
+        else:
+            print(f"subsampling applied to {num_sub / corpus.vocab.size} of the tokens")
+            # to 2d matrix
+            subsampler = subsampler.reshape((-1, 1)).dot(subsampler.reshape(1, -1))
+            logger.info('multiply elementwise: start')
+            # elementwise muplication of 2 matrices
+            count_matrix = count_matrix.multiply(subsampler)
+            # had to convert to dense for a minute
+            logger.info('multiply elementwise: done')
 
     return count_matrix.tocsr()
