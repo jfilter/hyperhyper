@@ -1,3 +1,6 @@
+import time
+
+
 def flatten_dict(prefix, dict):
     for k, v in dict.items():
         yield {f"{prefix}__{k}": v}
@@ -13,8 +16,6 @@ def record(func):
         if "evaluate" in kwargs and not kwargs["evaluate"]:
             return results
 
-        # args[0] is self
-        table = args[0].get_db()["experiments"]
         if len(results) > 1:
             db_dic = {}
             # params to dict
@@ -32,7 +33,18 @@ def record(func):
             for r in results[1]["results"]:
                 db_dic.update({f"{r['name']}_score": r["score"]})
                 db_dic.update({f"{r['name']}_oov": r["oov"]})
-            table.insert(db_dic)
+
+            # couldn't figure out the timeout param for datasets
+            while True:
+                try:
+                    # args[0] is self
+                    db = args[0].get_db()
+                    table = db["experiments"]
+                    table.insert(db_dic)
+                    break
+                except Exception as e:
+                    print(e)
+                    time.sleep(10)
         return results
 
     return wrapper

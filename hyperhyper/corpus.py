@@ -209,7 +209,6 @@ class Corpus(SaveLoad):
         preproc_func=texts_to_sents,
         preproc_single=True,
         view_fraction=1,
-        recount=True,
         lang='en',
         **kwargs,
     ):
@@ -247,11 +246,5 @@ class Corpus(SaveLoad):
         if view_fraction > 0.999:
             return Corpus(voc, preproc_func, input_text_fns=proc_fns, recount=False, lang=lang)
 
-        if recount:
-            return Corpus(voc, preproc_func, input_text_fns=proc_fns, recount=True, lang=lang)
+        return Corpus(voc, preproc_func, input_text_fns=proc_fns, recount=True, lang=lang)
 
-        # extrapolate
-        factor = 1 / view_fraction
-        for key, value in voc.dfs.items():
-            voc.dfs[key] = value * factor
-        return Corpus(voc, preproc_func, input_text_fns=proc_fns, recount=False, lang=lang)

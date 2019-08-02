@@ -45,6 +45,7 @@ class Bunch:
             self.db = dataset.connect(f"sqlite:///{self.path}/results.db")
         return self.db
 
+
     def dict_to_path(self, folder, dict):
         filename = "_".join([f"{k}_{v}" for k, v in dict.items()]).lower()
         if len(filename) == 0:
@@ -82,6 +83,7 @@ class Bunch:
 
         pmi_path.parent.mkdir(parents=True, exist_ok=True)
         save_matrix(pmi_path, pmi_matrix)
+        logger.info('matrix saved')
 
         return pmi_matrix
 
@@ -135,6 +137,8 @@ class Bunch:
 
         svd_path.parent.mkdir(parents=True, exist_ok=True)
         save_arrays(svd_path, ut, s)
+        logger.info('svd arrays saved')
+
         return ut, s
 
     @record

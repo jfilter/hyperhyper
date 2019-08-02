@@ -52,8 +52,5 @@ def test_text_files():
     # test
     corpus = hyperhyper.Corpus.from_text_files(test_dir)
     corpus = hyperhyper.Corpus.from_text_files(test_dir, view_fraction=0.2)
-    corpus = hyperhyper.Corpus.from_text_files(
-        test_dir, view_fraction=0.2, recount=False
-    )
     print(corpus)
     assert corpus.size > 2
