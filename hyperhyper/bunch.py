@@ -27,7 +27,9 @@ class Bunch:
 
         if not corpus is None and not force_overwrite:
             if Path(self.path / "corpus.pkl").is_file():
-                raise ValueError("There is already another corpus file saved. Set `force_overwrite` to True if you want to override it.")
+                raise ValueError(
+                    "There is already another corpus file saved. Set `force_overwrite` to True if you want to override it."
+                )
 
         if corpus is None:
             self.corpus = Corpus.load(str(self.path / "corpus.pkl"))
@@ -76,7 +78,7 @@ class Bunch:
         pmi_matrix = pmi.calc_pmi(counts, cds)
 
         end = timer()
-        logger.info("pmi took " + str(end - start) + " seconds")
+        logger.info("pmi took " + str(round(end - start, 2)) + " seconds")
 
         pmi_path.parent.mkdir(parents=True, exist_ok=True)
         save_matrix(pmi_path, pmi_matrix)
@@ -129,7 +131,7 @@ class Bunch:
         start = timer()
         ut, s = svd.calc_svd(m, dim, impl, impl_args)
         end = timer()
-        logger.info("svd took " + str(end - start) + " seconds")
+        logger.info("svd took " + str(round((end - start) / 60, 2))  + " minutes")
 
         svd_path.parent.mkdir(parents=True, exist_ok=True)
         save_arrays(svd_path, ut, s)
@@ -172,5 +174,9 @@ class Bunch:
 
     def eval_sim(self, embd, **kwargs):
         return evaluation.eval_similarity(
-            embd, self.corpus.vocab.token2id, self.corpus.preproc_fun, **kwargs
+            embd,
+            self.corpus.vocab.token2id,
+            self.corpus.preproc_fun,
+            lang=self.corpus.lang,
+            **kwargs,
         )

@@ -87,7 +87,7 @@ def texts_to_ids(input_text_fns, to_indices, recount):
         files_iter = iter(input_text_fns)
         MAX_JOBS_IN_QUEUE = os.cpu_count() * 2
 
-        with tqdm(total=len(input_text_fns), desc="generating pairs") as pbar:
+        with tqdm(total=len(input_text_fns), desc="texts to ids") as pbar:
             while files_left:
                 for this_file in files_iter:
                     job = executor.submit(
@@ -126,11 +126,12 @@ def _build_vocab_from_file(args):
 
 class Corpus(SaveLoad):
     def __init__(
-        self, vocab, preproc_fun, texts=None, input_text_fns=None, recount=False
+        self, vocab, preproc_fun, texts=None, input_text_fns=None, recount=False, lang='en'
     ):
         self.vocab = vocab
         self.vocab_size = vocab.size
         self.preproc_fun = preproc_fun
+        self.lang = lang
 
         if texts is None:
             to_indices = TransformToIndicesClosure(self)
@@ -183,7 +184,7 @@ class Corpus(SaveLoad):
 
     @staticmethod
     def from_sents(
-        texts, vocab=None, preproc_func=simple_tokenizer, preproc_single=False, **kwargs
+        texts, vocab=None, preproc_func=simple_tokenizer, preproc_single=False, lang='en', **kwargs
     ):
         assert preproc_func is not None
         if preproc_single:
@@ -193,7 +194,7 @@ class Corpus(SaveLoad):
 
         if vocab is None:
             vocab = Vocab(texts, **kwargs)
-        corpus = Corpus(vocab, preproc_func, texts=texts)
+        corpus = Corpus(vocab, preproc_func, texts=texts, lang=lang)
         return corpus
 
     @staticmethod
@@ -209,6 +210,7 @@ class Corpus(SaveLoad):
         preproc_single=True,
         view_fraction=1,
         recount=True,
+        lang='en',
         **kwargs,
     ):
         voc = Vocab()
@@ -243,13 +245,13 @@ class Corpus(SaveLoad):
         voc.filter(**kwargs)
 
         if view_fraction > 0.999:
-            return Corpus(voc, preproc_func, input_text_fns=proc_fns, recount=False)
+            return Corpus(voc, preproc_func, input_text_fns=proc_fns, recount=False, lang=lang)
 
         if recount:
-            return Corpus(voc, preproc_func, input_text_fns=proc_fns, recount=True)
+            return Corpus(voc, preproc_func, input_text_fns=proc_fns, recount=True, lang=lang)
 
         # extrapolate
         factor = 1 / view_fraction
         for key, value in voc.dfs.items():
             voc.dfs[key] = value * factor
-        return Corpus(voc, preproc_func, input_text_fns=proc_fns, recount=False)
+        return Corpus(voc, preproc_func, input_text_fns=proc_fns, recount=False, lang=lang)
