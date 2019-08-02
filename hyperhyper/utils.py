@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import pickle
+from collections import defaultdict
 
 import numpy as np
 from gensim.utils import flatten
@@ -102,3 +103,11 @@ def to_pickle(ob, fn):
 def read_pickle(fn):
     with open(fn, "rb") as infile:
         return pickle.load(infile)
+
+
+def dsum(*dicts):
+    ret = defaultdict(int)
+    for d in dicts:
+        for k, v in d.items():
+            ret[k] += v
+    return dict(ret)

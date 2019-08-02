@@ -1,3 +1,6 @@
+import tempfile
+from pathlib import Path
+
 import pytest
 
 import hyperhyper
@@ -18,12 +21,12 @@ Although the English Wikipedia stores images and audio files, as well as text fi
 Many of the most active participants in the Wikimedia Foundation, and the developers of the MediaWiki software that powers Wikipedia, are English users.
 """
 
-texts = [some_text1, some_text2]
+texts = [some_text1, some_text2] * 10
 
 
 def test_corpus():
     corpus = hyperhyper.Corpus.from_sents(texts)
-    assert corpus.size == 2
+    assert corpus.size == 20
     assert corpus.counts[corpus.vocab.token2id["wikipedia"]] > 0
     assert corpus.vocab.token2id["wikipedia"] == corpus.vocab.tokens.index("wikipedia")
 
@@ -38,4 +41,19 @@ def test_corpus():
 def test_sent_split():
     corpus = hyperhyper.Corpus.from_texts(texts)
     print(corpus.texts)
+    assert corpus.size > 2
+
+
+def test_text_files():
+    # setup
+    test_dir = tempfile.mkdtemp()
+    for i, t in enumerate(texts):
+        Path(test_dir + f"/{i}.txt").write_text(t)
+    # test
+    corpus = hyperhyper.Corpus.from_text_files(test_dir)
+    corpus = hyperhyper.Corpus.from_text_files(test_dir, view_fraction=0.2)
+    corpus = hyperhyper.Corpus.from_text_files(
+        test_dir, view_fraction=0.2, recount=False
+    )
+    print(corpus)
     assert corpus.size > 2
