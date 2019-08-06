@@ -1,5 +1,7 @@
 import time
 
+import sqlalchemy
+
 from .pair_counts import default_pair_args
 
 
@@ -8,12 +10,12 @@ def flatten_dict(prefix, dict):
         yield {f"{prefix}__{k}": v}
 
 
-# TODO: make sure to store byes to boolean?
-
-
 def record(func):
     def wrapper(*args, **kwargs):
         results = func(*args, **kwargs)
+
+        if not "pair_args" in kwargs:
+            kwargs["pair_args"] = default_pair_args
 
         if "evaluate" in kwargs and not kwargs["evaluate"]:
             return results
@@ -25,6 +27,7 @@ def record(func):
             db_dic.update({"method": func.__name__})
             for k, v in kwargs.items():
                 if type(v) is dict:
+                    print("k", k)
                     if k == "pair_args":
                         # merge with default arguments of pair counts
                         v = {**default_pair_args, **v}
@@ -46,7 +49,16 @@ def record(func):
                     # args[0] is self
                     db = args[0].get_db()
                     table = db["experiments"]
-                    table.insert(db_dic)
+                    # specify type because dataset guesses them sometimes wrongly
+                    table.insert(
+                        db_dic,
+                        types={
+                            k: sqlalchemy.types.String
+                            if type(v) is str
+                            else sqlalchemy.types.Float
+                            for k, v in db_dic.items()
+                        },
+                    )
                     break
                 except Exception as e:
                     print(e)
@@ -54,3 +66,32 @@ def record(func):
         return results
 
     return wrapper
+
+
+def results_from_db(db, query={}, order="micro_results desc", limit=100):
+    where = []
+    for k, v in query.items():
+        if type(v) is dict:
+            for fkfv in flatten_dict(k, v):
+                # ugly
+                for fk, fv in fkfv.items():
+                    where.append(f"{fk}={fv}")
+        else:
+            where.append(f"{k}={v}")
+    if len(where) > 0:
+        where = "where " + " and ".join(where)
+    else:
+        where = ""
+
+    if order is None:
+        order = ""
+    if len(order) > 0:
+        order = f"order by {order}"
+
+    if limit is None:
+        limit = ""
+    else:
+        limit = f"limit {limit}"
+
+    query_string = f"select distinct * from experiments {where} {order} {limit}"
+    return list(db.query(query_string))

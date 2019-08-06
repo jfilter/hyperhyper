@@ -35,12 +35,19 @@ def test_bunch(corpus):
     bunch.eval_sim(pmi_matrix)
     svd_matrix, _ = bunch.svd(dim=2)
     svd_matrix, _ = bunch.svd(dim=2, keyed_vector=True)
-    svd_matrix = bunch.svd(dim=2, keyed_vector=True, evaluate=False)
+    svd_matrix = bunch.svd(dim=3, keyed_vector=True, evaluate=False)
 
     print(svd_matrix.most_similar("english"))
 
     assert pmi_matrix.m.count_nonzero() > 0
     # hyperhyper.evaluation.eval_similarity(svd_matrix)
+
+
+def test_db_query(corpus):
+    bunch = hyperhyper.Bunch("test_bunch", corpus, force_overwrite=True)
+    bunch.svd(dim=2)
+    res = bunch.results(query={"dim": 2, "pair_args": {"window": 2}})
+    print(res)
 
 
 def test_bunch_text_files():

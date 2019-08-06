@@ -9,7 +9,7 @@ import dataset
 
 from . import evaluation, pair_counts, pmi, svd
 from .corpus import Corpus
-from .experiment import record
+from .experiment import record, results_from_db
 from .utils import delete_folder, load_arrays, load_matrix, save_arrays, save_matrix
 
 logger = logging.getLogger(__name__)
@@ -210,3 +210,6 @@ class Bunch:
             lang=self.corpus.lang,
             **kwargs,
         )
+
+    def results(self, **kwargs):
+        return results_from_db(self.get_db(), **kwargs)
