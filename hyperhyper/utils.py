@@ -1,4 +1,8 @@
-import concurrent.futures
+"""
+utility functions for i/o and other general funtionality
+"""
+
+from  concurrent import futures
 import logging
 import math
 import os
@@ -6,8 +10,7 @@ import pickle
 from collections import defaultdict
 
 import numpy as np
-from gensim.utils import flatten
-from scipy.sparse import csr_matrix, dok_matrix
+from scipy.sparse import csr_matrix
 from tqdm import tqdm
 
 num_cpu = os.cpu_count()
@@ -76,7 +79,7 @@ def map_pool_chunks(
 
 
 def map_pool(array, fun, total=None, desc=None, process_chunksize=100):
-    with concurrent.futures.ProcessPoolExecutor(num_cpu) as executor:
+    with futures.ProcessPoolExecutor(num_cpu) as executor:
         if desc is None:
             return list(executor.map(fun, array, chunksize=process_chunksize))
         return list(
@@ -109,6 +112,9 @@ def read_pickle(fn):
 
 
 def dsum(*dicts):
+    """
+    sum up numerical values in multiple dictionaries
+    """
     ret = defaultdict(int)
     for d in dicts:
         for k, v in d.items():

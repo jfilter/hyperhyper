@@ -32,6 +32,14 @@ I tried to the port the software to Python3. But I realized that it too hard so 
 
 But I extracted only the parts tha
 
+For systems using OpenBLAS, I highly recommend setting `export OPENBLAS_NUM_THREADS=1`. This disables its internal multithreading ability, which leads to substantial speedups for this package. Likewise for Intel MKL, setting `export MKL_NUM_THREADS=1` should also be set.
+
+Remove pmi and svd folders
+`find . -name pmi -exec rm -rf {} \;`
+
+Remove pmi and svd folders
+`find . -name pmi -exec rm -rf {} \;`
+
 ## Development
 
 1. Install [pipenv](https://docs.pipenv.org/en/latest/).

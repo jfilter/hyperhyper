@@ -1,8 +1,12 @@
+"""
+implements PMI matrix (Pointwise mutual information)
+See: https://en.wikipedia.org/wiki/Pointwise_mutual_information
+"""
+
 import heapq
 
 import numpy as np
 from scipy.sparse import csr_matrix, dok_matrix
-from tqdm import tqdm
 
 
 def calc_pmi(counts, cds):

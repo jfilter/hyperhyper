@@ -1,3 +1,10 @@
+"""
+evaluate the performance of an embedding
+
+cant use the evaluation stuff in gensim because the keyed vector strucutre does not ork for PPMI
+non keyed vectors (used for PPMI)
+"""
+
 from pathlib import Path
 
 import numpy as np
@@ -14,13 +21,18 @@ except ImportError:
 
 
 def read_test_data(lang, type):
-    with path(evaluation_datasets, lang) as pad:
-        for x in pad.glob(f"{type}/*.txt"):
-            yield x
+    """
+    read test data that is stored within the module
+    """
+    with path(evaluation_datasets, lang) as eval_dir:
+        for file in eval_dir.glob(f"{type}/*.txt"):
+            yield file
 
 
-# get item to list
 def to_item(li):
+    """
+    squeeze
+    """
     if isinstance(li, list):
         if len(li) == 0:
             return None
@@ -30,10 +42,6 @@ def to_item(li):
     return li
 
 
-# cant use the evaluation stuff in gensim because the keyed vector strucutre does not ork for PPMI
-# non keyed vectors (used for PPMI)
-
-
 def setup_test_tokens(p, keep_len):
     lines = Path(p).read_text().split("\n")
     lines = [l.split() for l in lines]
@@ -41,8 +49,10 @@ def setup_test_tokens(p, keep_len):
     return lines
 
 
-# word similarity
 def eval_similarity(vectors, token2id, preproc_fun, lang="en"):
+    """
+    word similarity
+    """
     line_counts = []
     spear_results = []
     full_results = []
@@ -61,7 +71,7 @@ def eval_similarity(vectors, token2id, preproc_fun, lang="en"):
         for x, y, sim in zip(token1, token2, sims):
             x = to_item(x)
             y = to_item(y)
-            
+
             # skip over OOV
             if x is None or y is None:
                 continue

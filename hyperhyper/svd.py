@@ -1,9 +1,13 @@
+"""
+apply SVD on a PPMI matrix to get low-dimensional word embeddings
+"""
+
 import heapq
 import logging
 
 import numpy as np
 from gensim.models.lsimodel import stochastic_svd
-from scipy.sparse import csr_matrix, dok_matrix, linalg
+from scipy.sparse import linalg
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +23,20 @@ except ImportError:
     logger.info("no sklearn")
 
 
-# Checkout the comparision: https://github.com/jfilter/sparse-svd-benchmark
-# https://scikit-learn.org/stable/modules/generated/sklearn.utils.extmath.randomized_svd.html
-# https://pypi.org/project/sparsesvd/
-# https://github.com/RaRe-Technologies/gensim/blob/develop/gensim/models/lsimodel.py
-
-
 def calc_svd(matrix, dim, impl, impl_args):
+    """
+    apply truncated SVD with several implementations
+
+    truncated SVD:
+    sparsesvd: https://pypi.org/project/sparsesvd/
+    scipy: https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.svd.html
+
+    randomized truncated SVD:
+    gensim: https://github.com/RaRe-Technologies/gensim/blob/develop/gensim/models/lsimodel.py
+    scikit: https://scikit-learn.org/stable/modules/generated/sklearn.utils.extmath.randomized_svd.html
+
+    Check out the comparision: https://github.com/jfilter/sparse-svd-benchmark
+    """
     if impl == "sparsesvd":
         # originally used SVD implementation
         ut, s, _ = sparsesvd(matrix.m.tocsc(), dim)

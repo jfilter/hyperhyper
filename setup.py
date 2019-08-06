@@ -24,11 +24,11 @@ setup(
     packages=["hyperhyper"],
     classifiers=classifiers,
     install_requires=[
-        "dataset",
+        "dataset==1.*",
         "tqdm",
-        "gensim",
+        "gensim==3.*",
         "importlib_resources ; python_version<'3.7'",
     ],
-    extras_require={"full": ["spacy==2.*", "scikit-learn", "matplotlib"]},
+    extras_require={"full": ["spacy==2.*", "scikit-learn"]},
 )
 

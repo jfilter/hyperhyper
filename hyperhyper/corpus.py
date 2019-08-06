@@ -1,6 +1,9 @@
+"""
+represent a collection of texts
+"""
+
 import logging
 import os
-import pickle
 import random
 from array import array
 from collections import defaultdict
@@ -14,17 +17,22 @@ from tqdm import tqdm
 from .preprocessing import texts_to_sents, tokenize_texts, tokenize_texts_parallel
 from .utils import chunks, dsum, read_pickle, to_pickle
 
-random.seed(1312)
 logger = logging.getLogger(__name__)
 
 
 class Vocab(Dictionary):
+    """
+    holds mapping for the integer ids to the tokens (words)
+    """
     def __init__(self, texts=None, **kwargs):
         super().__init__(texts)
         if not texts is None:
             self.filter(**kwargs)
 
     def filter(self, no_below=0, no_above=1, keep_n=50000, keep_tokens=None):
+        """
+        filter with sane defaults
+        """
         self.filter_extremes(
             no_below=no_below, no_above=no_above, keep_n=keep_n, keep_tokens=keep_tokens
         )
@@ -35,14 +43,18 @@ class Vocab(Dictionary):
 
     @property
     def tokens(self):
-        # return tokens as array (in order of id)
+        """
+        return tokens as array (in order of id)
+        """
         return [tup[0] for tup in sorted(self.token2id.items(), key=lambda x: x[1])]
 
 
 class TransformToIndicesClosure(object):
-    # a closure that is pickable
-    # <UNK> is the last ID (thus vocab_size)
-    # https://docs.python.org/3/library/array.html
+    """
+    a closure that is pickable
+    <UNK> is the last ID (thus vocab_size)
+    for sizes: https://docs.python.org/3/library/array.html
+    """
 
     def __init__(self, c):
         self.vocab_size = c.vocab.size
@@ -57,7 +69,9 @@ class TransformToIndicesClosure(object):
 
 
 def count_tokens(texts):
-    # count again, gensim's dictionary only provides document frequencies
+    """
+    count again since gensim's dictionary only provides document frequencies
+    """
     counts = defaultdict(int)
     for text in texts:
         for token in text:
@@ -75,6 +89,9 @@ def _texts_to_ids(args):
 
 
 def texts_to_ids(input_text_fns, to_indices):
+    """
+    transform the raw texts to integer ids
+    """
     total_len = 0
     all_counts = []
     with futures.ProcessPoolExecutor() as executor:
@@ -141,19 +158,23 @@ class Corpus(SaveLoad):
             self.size = len(transformed)
 
     def texts_to_file(self, dir, text_chunk_size):
+        """
+        If we haven't created the temporay text files yet, do it here.
+        We could't do it earlier since we only have location on the filesystem
+        through the `bunch`.
+        """
         if self.texts is None:
-            # just use the ones we created
+            # re-use the texts that were created for initialization of the corpus
+            # TODO: make use of chunk size?
             self.texts = self.input_text_fns
             fns = []
             Path(dir).mkdir(parents=True, exist_ok=True)
             for i, f in enumerate(self.input_text_fns):
-                # TODO: make use of chunk size?
                 new_path = Path(f"{dir}/texts_{i}.pkl").resolve()
                 f.rename(new_path)
                 fns.append(new_path)
             self.texts = fns
         else:
-            # can't do in init because we don't have a file location yet
             fns = []
             for i, c in enumerate(chunks(self.texts, text_chunk_size)):
                 fn = Path(f"{dir}/texts_{i}.pkl").resolve()
@@ -164,9 +185,8 @@ class Corpus(SaveLoad):
     @staticmethod
     def from_file(input, limit=None, **kwargs):
         """
-        Reads a file where each line represent a sentence.
+        Reads a file where each line represents a sentence.
         """
-
         logger.info("reading file")
         text = Path(input).read_text()
         lines = text.splitlines()
@@ -179,6 +199,9 @@ class Corpus(SaveLoad):
     def from_sents(
         texts, vocab=None, preproc_func=tokenize_texts_parallel, lang="en", **kwargs
     ):
+        """
+        pass in texts that represent sentences
+        """
         texts = preproc_func(texts)
         if vocab is None:
             vocab = Vocab(texts, **kwargs)
@@ -187,12 +210,19 @@ class Corpus(SaveLoad):
 
     @staticmethod
     def from_texts(texts, preproc_func=texts_to_sents, **kwargs):
+        """
+        pass in texts
+        """
         return Corpus.from_sents(texts, preproc_func=preproc_func, **kwargs)
 
     @staticmethod
     def from_text_files(
         base_dir, preproc_func=texts_to_sents, view_fraction=1, lang="en", **kwargs
     ):
+        """
+        iterate over ".txt" files in the directory
+        the text files determine the file size for later use
+        """
         voc = Vocab()
         input_text_fns = list(Path(base_dir).glob("*.txt"))
         proc_fns = [f.with_suffix(".pkl") for f in input_text_fns]
@@ -217,11 +247,11 @@ class Corpus(SaveLoad):
                     for job in futures.as_completed(jobs):
                         files_left -= 1
                         pbar.update(1)
-                        # update document frequencies
+                        # merge into one vocab
                         voc.merge_with(job.result())
                         del jobs[job]
 
-        # only consider most frequent terms
+        # only consider most frequent terms etc.
         voc.filter(**kwargs)
 
         if view_fraction > 0.999:

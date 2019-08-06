@@ -1,45 +1,34 @@
+"""
+construct a co-occurrence matrix by counting word pairs (co-locations of words)
+"""
+
 import logging
 import os
 import random
-from array import array
-from collections import Counter, defaultdict
+from collections import defaultdict
 from concurrent import futures
-from math import ceil, fabs, sqrt, e
+from math import fabs, sqrt, e
 
 import numpy as np
-from gensim.utils import SaveLoad
-from scipy.sparse import coo_matrix, csr_matrix, dok_matrix
+from scipy.sparse import coo_matrix
 from tqdm import tqdm
 
-from .utils import chunks, read_pickle
+from .utils import read_pickle
 
 logger = logging.getLogger(__name__)
 
 
-def decay(x, rate):
-    x -= 1  # so the value is 1 when the distance is 1
-    return e ** -(rate * x)
-
-
-class PairCounts(SaveLoad):
-    counter = defaultdict(int)
-
-    def __getitem__(self, key):
-        return self.counter[key]
-
-    def __setitem__(self, key, value):
-        self.counter[key] = value
-
-    def items(self):
-        return self.counter.items()
-
-    def __str__(self):
-        return str(self.counter)
+def decay(distance, rate):
+    """
+    simple exponential decay
+    """
+    distance -= 1  # the returned value is 1 when the distance is 1
+    return e ** -(rate * distance)
 
 
 def to_count_matrix(pair_counts, vocab_size):
     """
-    Transforms the counts into a sparse matrix (CSR).
+    transforms the counts into a sparse matrix
     """
     cols = []
     rows = []
@@ -48,16 +37,20 @@ def to_count_matrix(pair_counts, vocab_size):
         rows.append(k[0])
         cols.append(k[1])
         data.append(v)
-    # why is float32 so important?
-    # +1 for UNK
+    # setting to float is important, +1 for UNK
+    # coo matrix is the fastest for constructing the matrix since we have all
+    # the data already
     count_matrix = coo_matrix(
         (data, (rows, cols)), shape=(vocab_size + 1, vocab_size + 1), dtype=np.float32
     )
-    # logger.info(f"num non-zeros: {count_matrix.count_nonzero()}")
     return count_matrix
 
 
 def count_pairs_parallel(texts_paths, count_pairs_closure, low_memory):
+    """
+    count pairs in parallel by loading and processing files to keep memory
+    consumption low
+    """
     # Ensure that memory is freed when a job completes.
     res = None
     with futures.ProcessPoolExecutor() as executor:
@@ -93,9 +86,12 @@ def count_pairs_parallel(texts_paths, count_pairs_closure, low_memory):
     return res
 
 
-# The 'pythonic' of creating closures (irony).
-# Used for pickeling when doing multiprocessing.
 class CountPairsClosure(object):
+    """
+    creating a closure, has to be an object to be pickle-able when doing
+    multiprocessing
+    """
+
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
 
@@ -117,7 +113,6 @@ class CountPairsClosure(object):
         return to_count_matrix(counter, self.vocab_size)
 
 
-# iterate over tokens in a sentence
 def iterate_tokens(
     tokens,
     window,
@@ -128,6 +123,9 @@ def iterate_tokens(
     subsampler_prob,
     unkown_id,
 ):
+    """
+    iterate over tokens in a sentence and counting pairs
+    """
     if delete_oov:
         tokens = [t for t in tokens if t != unkown_id]
 
@@ -167,6 +165,8 @@ def iterate_tokens(
     return res
 
 
+# storing the default values here again to re-use them when writing to the db
+# TODO: implement in a more elegant way
 default_pair_args = {
     "window": 2,
     "dynamic_window": "deter",
@@ -175,6 +175,7 @@ default_pair_args = {
     "subsample": "deter",
     "subsample_factor": 1e-5,
 }
+
 
 def count_pairs(
     corpus,
@@ -188,6 +189,9 @@ def count_pairs(
     seed=1312,
     low_memory=False,
 ):
+    """
+    counting pairs in a corpus
+    """
     for x in [dynamic_window, subsample]:
         if not x is None and not x == False:
             assert x in ("deter", "prob", "off", "decay")
@@ -222,28 +226,32 @@ def count_pairs(
         # construct array with appropriate factor
         subsample_value = subsample_factor * corpus.size
         subsampler = np.ones(corpus.vocab.size + 1, dtype=np.float32)
-
-        logger.info('creating subsampler matrix')
+        logger.info("creating array for the subsampling")
         num_sub = 0
         for word, count in corpus.counts.items():
             if count > subsample_value:
                 subsampler[word] = sqrt(subsample_value / count)
                 num_sub += 1
+        print(f"subsampling applied to {num_sub / corpus.vocab.size} of the tokens")
+
         if low_memory:
             # this requires less memory but more time
+            logger.info("using low memory mode for subsampling")
             indices = zip(*count_matrix.nonzero())
             total = count_matrix.count_nonzero()
+            # iterating over dok matrix is faster, dense would be even more faster
             count_matrix = count_matrix.todok()
-            for i, j in tqdm(indices, desc="subsample deterministic (low memory)", total=total):
+            for i, j in tqdm(
+                indices, desc="subsample deterministic (low memory)", total=total
+            ):
                 count_matrix[(i, j)] *= subsampler[i] * subsampler[j]
         else:
-            print(f"subsampling applied to {num_sub / corpus.vocab.size} of the tokens")
+            logger.info("creating subsampler matrix")
             # to 2d matrix
             subsampler = subsampler.reshape((-1, 1)).dot(subsampler.reshape(1, -1))
-            logger.info('multiply elementwise: start')
+            logger.info("multiply elementwise: start")
             # elementwise muplication of 2 matrices
             count_matrix = count_matrix.multiply(subsampler)
-            # had to convert to dense for a minute
-            logger.info('multiply elementwise: done')
+            logger.info("multiply elementwise: done")
 
     return count_matrix.tocsr()

@@ -1,3 +1,9 @@
+"""
+The heart of the package. This combines all the function and also exposes
+the funtionality to the user. The `bunch` is the location where all the
+resulting files are stored.
+"""
+
 import logging
 from pathlib import Path
 from timeit import default_timer as timer
@@ -40,12 +46,18 @@ class Bunch:
             self.corpus.save(str(self.path / "corpus.pkl"))
 
     def get_db(self):
+        """
+        Connecting to a SQLite database.
+        """
         if self.db is None:
-            # connecting to a SQLite database
             self.db = dataset.connect(f"sqlite:///{self.path}/results.db")
         return self.db
 
     def dict_to_path(self, folder, dict):
+        """
+        Return a file path for an embedding based on parameters.
+        """
+
         # cast integer floats to ints
         for k, v in dict.items():
             if type(v) is float:
@@ -62,6 +74,9 @@ class Bunch:
         return full_path
 
     def pair_counts(self, **kwargs):
+        """
+        Count pairs.
+        """
         pair_path = self.dict_to_path("pair_counts", kwargs)
         if pair_path.is_file():
             try:
@@ -77,6 +92,9 @@ class Bunch:
         return count_matrix
 
     def pmi_matrix(self, cds=0.75, pair_args={}, **kwargs):
+        """
+        Create a PMI matrix.
+        """
         pmi_path = self.dict_to_path("pmi", {"cds": cds, **pair_args})
         if pmi_path.is_file():
             try:
@@ -110,6 +128,9 @@ class Bunch:
         evaluate=True,
         **kwargs,
     ):
+        """
+        Gets the PMI matrix.
+        """
         m = self.pmi_matrix(cds, pair_args, **kwargs)
         embd = pmi.PPMIEmbedding(m, neg=neg)
         if evaluate:
@@ -123,6 +144,9 @@ class Bunch:
     def svd_matrix(
         self, impl, impl_args={}, dim=500, neg=1, cds=0.75, pair_args={}, **kwargs
     ):
+        """
+        Do the actual SVD computation.
+        """
         assert impl in ["scipy", "gensim", "scikit", "sparsesvd"]
 
         svd_path = self.dict_to_path(
@@ -173,6 +197,9 @@ class Bunch:
         evaluate=True,
         **kwargs,
     ):
+        """
+        Gets and SVD embedding.
+        """
         ut, s = self.svd_matrix(
             impl=impl,
             impl_args=impl_args,
@@ -193,7 +220,10 @@ class Bunch:
         return embedding
 
     def to_keyed_vectors(self, embd_matrix, dim):
-        # https://github.com/RaRe-Technologies/gensim/blob/develop/gensim/models/keyedvectors.py
+        """
+        Transform to gensim's keyed vectors structure for further usage.
+        https://github.com/RaRe-Technologies/gensim/blob/develop/gensim/models/keyedvectors.py
+        """
         vectors = WordEmbeddingsKeyedVectors(vector_size=dim)
 
         # delete last row (for <UNK> token)
@@ -203,6 +233,10 @@ class Bunch:
         return vectors
 
     def eval_sim(self, embd, **kwargs):
+        """
+        Evaluate the performance on word similarity datasets.
+        NB: The corpus has to be initialized with the correct language.
+        """
         return evaluation.eval_similarity(
             embd,
             self.corpus.vocab.token2id,
@@ -212,4 +246,7 @@ class Bunch:
         )
 
     def results(self, **kwargs):
+        """
+        Retrieve evaluation results from the database.
+        """
         return results_from_db(self.get_db(), **kwargs)

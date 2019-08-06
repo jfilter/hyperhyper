@@ -1,3 +1,7 @@
+"""
+simple text preprocessing such as cleaning and tokenization
+"""
+
 import os
 import re
 
@@ -16,26 +20,40 @@ except:
     spacy = None
 
 
-def simple_preproc(t):
-    return re.sub(r"\d", "0", t.lower())
+def simple_preproc(text):
+    """
+    replace digits with 0 and lowercase text
+    """
+    return re.sub(r"\d", "0", text.lower())
 
 
 def tokenize_string(text):
+    """
+    tokenize based on whitespaces
+    """
     CUSTOM_FILTERS = [simple_preproc, strip_tags, strip_non_alphanum]
     return preprocess_string(text, CUSTOM_FILTERS)
 
 
 def tokenize_texts(texts):
-    # work on multiple texts in parallel
+    """
+    tokenize multiple texts (list of texts) based on whitespaces
+    """
     return [tokenize_string(t) for t in texts]
 
 
 def tokenize_texts_parallel(texts):
+    """
+    tokenize multiple texts based on whitespaces in parrallel
+    """
     return map_pool(texts, tokenize_string)
 
 
-# transform array of texts to arrays of sents (arrays of tokens) with simple preprocessing
 def texts_to_sents(texts, model="en_core_web_sm", remove_stop=True, lemmatize=True):
+    """
+    transform list of texts to list of sents (list of tokens) and apply
+    simple text preprocessing
+    """
     texts = [strip_tags(t) for t in texts]
     results = []
 
@@ -44,8 +62,7 @@ def texts_to_sents(texts, model="en_core_web_sm", remove_stop=True, lemmatize=Tr
     try:
         nlp = spacy.load(model, disable=["ner"])
     except Exception as e:
-        print(e)
-        print("trying to download model...")
+        print(e, "\ntrying to download model...")
         os.system("python -m spacy download " + model)
         nlp = spacy.load(model, disable=["ner"])
 

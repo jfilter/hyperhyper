@@ -1,3 +1,7 @@
+"""
+store and retrieve experiment results in a database
+"""
+
 import time
 
 import sqlalchemy
@@ -6,11 +10,18 @@ from .pair_counts import default_pair_args
 
 
 def flatten_dict(prefix, dict):
+    """
+    flatten a dict Django-style
+    """
     for k, v in dict.items():
         yield {f"{prefix}__{k}": v}
 
 
 def record(func):
+    """
+    record the evaluation of an embedding in a database
+    """
+
     def wrapper(*args, **kwargs):
         results = func(*args, **kwargs)
 
@@ -69,6 +80,9 @@ def record(func):
 
 
 def results_from_db(db, query={}, order="micro_results desc", limit=100):
+    """
+    retrieve (the best) results from a database
+    """
     where = []
     for k, v in query.items():
         if type(v) is dict:
