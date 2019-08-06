@@ -13,6 +13,7 @@ classifiers = [
 setup(
     name="hyperhyper",
     version="0.0.0",
+    python_requires=">=3.6",
     description="",
     long_description=long_description,
     long_description_content_type="text/markdown",

@@ -77,14 +77,15 @@ def map_pool_chunks(
 
 def map_pool(array, fun, total=None, desc=None, process_chunksize=100):
     with concurrent.futures.ProcessPoolExecutor(num_cpu) as executor:
-        results = list(
+        if desc is None:
+            return list(executor.map(fun, array, chunksize=process_chunksize))
+        return list(
             tqdm(
                 executor.map(fun, array, chunksize=process_chunksize),
                 total=len(array) if total is None else total,
                 desc=desc,
             )
         )
-    return results
 
 
 def delete_folder(pth):
@@ -95,10 +96,12 @@ def delete_folder(pth):
             sub.unlink()
     pth.rmdir()
 
+
 def to_pickle(ob, fn):
     fn.parent.mkdir(parents=True, exist_ok=True)
     with open(fn, "wb") as outfile:
         pickle.dump(ob, outfile)
+
 
 def read_pickle(fn):
     with open(fn, "rb") as infile:

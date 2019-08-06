@@ -1,5 +1,7 @@
 import time
 
+from .pair_counts import default_pair_args
+
 
 def flatten_dict(prefix, dict):
     for k, v in dict.items():
@@ -23,6 +25,9 @@ def record(func):
             db_dic.update({"method": func.__name__})
             for k, v in kwargs.items():
                 if type(v) is dict:
+                    if k == "pair_args":
+                        # merge with default arguments of pair counts
+                        v = {**default_pair_args, **v}
                     for x in flatten_dict(k, v):
                         db_dic.update(x)
                 else:
@@ -33,6 +38,7 @@ def record(func):
             for r in results[1]["results"]:
                 db_dic.update({f"{r['name']}_score": r["score"]})
                 db_dic.update({f"{r['name']}_oov": r["oov"]})
+                db_dic.update({f"{r['name']}_fullscore": r["fullscore"]})
 
             # couldn't figure out the timeout param for datasets
             while True:

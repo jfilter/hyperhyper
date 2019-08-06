@@ -1,5 +1,5 @@
-import re
 import os
+import re
 
 from gensim.parsing.preprocessing import (
     preprocess_string,
@@ -7,6 +7,8 @@ from gensim.parsing.preprocessing import (
     strip_tags,
 )
 from tqdm import tqdm
+
+from .utils import map_pool
 
 try:
     import spacy
@@ -18,19 +20,22 @@ def simple_preproc(t):
     return re.sub(r"\d", "0", t.lower())
 
 
-CUSTOM_FILTERS = [simple_preproc, strip_tags, strip_non_alphanum]
-
-
-def simple_tokenizer(text):
+def tokenize_string(text):
+    CUSTOM_FILTERS = [simple_preproc, strip_tags, strip_non_alphanum]
     return preprocess_string(text, CUSTOM_FILTERS)
 
 
-# transform array of texts to arrays of sents (arrays of tokens) with simple preprocessing
-def texts_to_sents(texts, model="en_core_web_sm"):
-    if type(texts) is str:
-        # this is called for evaluation
-        return simple_preproc(texts)
+def tokenize_texts(texts):
+    # work on multiple texts in parallel
+    return [tokenize_string(t) for t in texts]
 
+
+def tokenize_texts_parallel(texts):
+    return map_pool(texts, tokenize_string)
+
+
+# transform array of texts to arrays of sents (arrays of tokens) with simple preprocessing
+def texts_to_sents(texts, model="en_core_web_sm", remove_stop=True, lemmatize=True):
     texts = [strip_tags(t) for t in texts]
     results = []
 
@@ -48,9 +53,11 @@ def texts_to_sents(texts, model="en_core_web_sm"):
         for s in doc.sents:
             results.append(
                 [
-                    simple_preproc(t.text)
+                    simple_preproc(
+                        strip_non_alphanum(t.lemma_ if lemmatize else t.text)
+                    )
                     for t in s
-                    if not any((t.is_punct, t.is_space, t.is_stop))
+                    if not any((t.is_punct, t.is_space, remove_stop and t.is_stop))
                 ]
             )
     return results

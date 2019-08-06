@@ -11,8 +11,8 @@ from gensim.corpora import Dictionary
 from gensim.utils import SaveLoad
 from tqdm import tqdm
 
-from .preprocessing import simple_tokenizer, texts_to_sents
-from .utils import chunks, dsum, map_pool, read_pickle, to_pickle
+from .preprocessing import texts_to_sents, tokenize_texts, tokenize_texts_parallel
+from .utils import chunks, dsum, read_pickle, to_pickle
 
 random.seed(1312)
 logger = logging.getLogger(__name__)
@@ -76,7 +76,6 @@ def _texts_to_ids(args):
     return len(transformed), counts
 
 
-
 def texts_to_ids(input_text_fns, to_indices, recount):
     total_len = 0
     all_counts = []
@@ -126,12 +125,18 @@ def _build_vocab_from_file(args):
 
 class Corpus(SaveLoad):
     def __init__(
-        self, vocab, preproc_fun, texts=None, input_text_fns=None, recount=False, lang='en'
+        self,
+        vocab,
+        preproc_fun,
+        texts=None,
+        input_text_fns=None,
+        recount=False,
+        lang="en",
     ):
         self.vocab = vocab
         self.vocab_size = vocab.size
-        self.preproc_fun = preproc_fun
         self.lang = lang
+        self.preproc_fun = preproc_fun
 
         if texts is None:
             to_indices = TransformToIndicesClosure(self)
@@ -157,8 +162,14 @@ class Corpus(SaveLoad):
         if self.texts is None:
             # just use the ones we created
             self.texts = self.input_text_fns
-            # for i, f in enumerate(self.input_text_fns):
-            #     pass
+            fns = []
+            Path(dir).mkdir(parents=True, exist_ok=True)
+            for i, f in enumerate(self.input_text_fns):
+                # TODO: make use of chunk size?
+                new_path = Path(f"{dir}/texts_{i}.pkl").resolve()
+                f.rename(new_path)
+                fns.append(new_path)
+            self.texts = fns
         else:
             # can't do in init because we don't have a file location yet
             fns = []
@@ -184,33 +195,21 @@ class Corpus(SaveLoad):
 
     @staticmethod
     def from_sents(
-        texts, vocab=None, preproc_func=simple_tokenizer, preproc_single=False, lang='en', **kwargs
+        texts, vocab=None, preproc_func=tokenize_texts_parallel, lang="en", **kwargs
     ):
-        assert preproc_func is not None
-        if preproc_single:
-            texts = preproc_func(texts)
-        else:
-            texts = map_pool(texts, preproc_func, desc="preprocessing texts")
-
+        texts = preproc_func(texts)
         if vocab is None:
             vocab = Vocab(texts, **kwargs)
         corpus = Corpus(vocab, preproc_func, texts=texts, lang=lang)
         return corpus
 
     @staticmethod
-    def from_texts(texts, preproc_func=texts_to_sents, preproc_single=True, **kwargs):
-        return Corpus.from_sents(
-            texts, preproc_func=preproc_func, preproc_single=preproc_single, **kwargs
-        )
+    def from_texts(texts, preproc_func=texts_to_sents, **kwargs):
+        return Corpus.from_sents(texts, preproc_func=preproc_func, **kwargs)
 
     @staticmethod
     def from_text_files(
-        base_dir,
-        preproc_func=texts_to_sents,
-        preproc_single=True,
-        view_fraction=1,
-        lang='en',
-        **kwargs,
+        base_dir, preproc_func=texts_to_sents, view_fraction=1, lang="en", **kwargs
     ):
         voc = Vocab()
         input_text_fns = list(Path(base_dir).glob("*.txt"))
@@ -244,7 +243,11 @@ class Corpus(SaveLoad):
         voc.filter(**kwargs)
 
         if view_fraction > 0.999:
-            return Corpus(voc, preproc_func, input_text_fns=proc_fns, recount=False, lang=lang)
+            return Corpus(
+                voc, preproc_func, input_text_fns=proc_fns, recount=False, lang=lang
+            )
 
-        return Corpus(voc, preproc_func, input_text_fns=proc_fns, recount=True, lang=lang)
+        return Corpus(
+            voc, preproc_func, input_text_fns=proc_fns, recount=True, lang=lang
+        )
 

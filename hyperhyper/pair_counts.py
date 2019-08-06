@@ -167,6 +167,15 @@ def iterate_tokens(
     return res
 
 
+default_pair_args = {
+    "window": 2,
+    "dynamic_window": "deter",
+    "decay_rate": 0.25,
+    "delete_oov": True,
+    "subsample": "deter",
+    "subsample_factor": 1e-5,
+}
+
 def count_pairs(
     corpus,
     window=2,
@@ -175,6 +184,7 @@ def count_pairs(
     delete_oov=True,
     subsample="deter",
     subsample_factor=1e-5,
+    # subsample_ratio=0.2,
     seed=1312,
     low_memory=False,
 ):

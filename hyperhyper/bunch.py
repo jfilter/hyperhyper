@@ -45,9 +45,15 @@ class Bunch:
             self.db = dataset.connect(f"sqlite:///{self.path}/results.db")
         return self.db
 
-
     def dict_to_path(self, folder, dict):
-        filename = "_".join([f"{k}_{v}" for k, v in dict.items()]).lower()
+        # cast integer floats to ints
+        for k, v in dict.items():
+            if type(v) is float:
+                if v.is_integer():
+                    dict[k] = int(v)
+
+        filenames = [f"{k}_{v}".lower() for k, v in dict.items()]
+        filename = "_".join(sorted(filenames))
         if len(filename) == 0:
             filename = "default"
 
@@ -58,8 +64,11 @@ class Bunch:
     def pair_counts(self, **kwargs):
         pair_path = self.dict_to_path("pair_counts", kwargs)
         if pair_path.is_file():
-            logger.info("retrieved already saved pair count")
-            return load_matrix(pair_path)
+            try:
+                logger.info("retrieved already saved pair count")
+                return load_matrix(pair_path)
+            except Exception as e:
+                logger.info(f"creating pair counts, error while loading files: {e}")
 
         print("create new pair counts")
         pair_path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,8 +79,12 @@ class Bunch:
     def pmi_matrix(self, cds=0.75, pair_args={}, **kwargs):
         pmi_path = self.dict_to_path("pmi", {"cds": cds, **pair_args})
         if pmi_path.is_file():
-            logger.info("retrieved already saved pmi")
-            return load_matrix(pmi_path)
+            try:
+                logger.info("retrieved already saved pmi")
+                return load_matrix(pmi_path)
+            except Exception as e:
+                logger.info(f"creating new pmi, error while loading files: {e}")
+
         print("create new pmi")
         counts = self.pair_counts(**pair_args, **kwargs)
 
@@ -83,7 +96,7 @@ class Bunch:
 
         pmi_path.parent.mkdir(parents=True, exist_ok=True)
         save_matrix(pmi_path, pmi_matrix)
-        logger.info('matrix saved')
+        logger.info("matrix saved")
 
         return pmi_matrix
 
@@ -123,9 +136,14 @@ class Bunch:
                 **pair_args,
             },
         )
+        logger.debug(f"looking up the file: {svd_path}")
         if svd_path.is_file():
-            logger.info("retrieved already saved svd")
-            return load_arrays(svd_path)
+            try:
+                logger.info("retrieved already saved svd")
+                return load_arrays(svd_path)
+            except Exception as e:
+                logger.info(f"creating new svd, error while loading files: {e}")
+
         print("creating new svd")
         m = self.pmi_matrix(cds, pair_args, **kwargs)
         m = pmi.PPMIEmbedding(m, neg=neg, normalize=False)
@@ -133,11 +151,11 @@ class Bunch:
         start = timer()
         ut, s = svd.calc_svd(m, dim, impl, impl_args)
         end = timer()
-        logger.info("svd took " + str(round((end - start) / 60, 2))  + " minutes")
+        logger.info("svd took " + str(round((end - start) / 60, 2)) + " minutes")
 
         svd_path.parent.mkdir(parents=True, exist_ok=True)
         save_arrays(svd_path, ut, s)
-        logger.info('svd arrays saved')
+        logger.info("svd arrays saved")
 
         return ut, s
 
@@ -155,7 +173,15 @@ class Bunch:
         evaluate=True,
         **kwargs,
     ):
-        ut, s = self.svd_matrix(impl, impl_args, dim, neg, cds, pair_args, **kwargs)
+        ut, s = self.svd_matrix(
+            impl=impl,
+            impl_args=impl_args,
+            dim=dim,
+            neg=neg,
+            cds=cds,
+            pair_args=pair_args,
+            **kwargs,
+        )
         embedding = svd.SVDEmbedding(ut, s, eig=eig)
 
         if evaluate:

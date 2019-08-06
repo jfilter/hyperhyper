@@ -25,8 +25,11 @@ texts = [some_text1, some_text2] * 10
 
 
 def test_corpus():
-    corpus = hyperhyper.Corpus.from_sents(texts)
-    assert corpus.size == 20
+    sents = []
+    for t in texts:
+        sents += t.split("\n\n")
+    corpus = hyperhyper.Corpus.from_sents(sents)
+    assert corpus.size == len(sents)
     assert corpus.counts[corpus.vocab.token2id["wikipedia"]] > 0
     assert corpus.vocab.token2id["wikipedia"] == corpus.vocab.tokens.index("wikipedia")
 
