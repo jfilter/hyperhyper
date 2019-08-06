@@ -51,6 +51,10 @@ Remove pmi and svd folders
    pytest tests
    ```
 
+## Hyper Hyper?
+
+[![Scooter – Hyper Hyper (Song)](https://img.youtube.com/vi/7Twnmhe948A/0.jpg)](https://www.youtube.com/watch?v=7Twnmhe948A "Scooter – Hyper Hyper")
+
 ## License
 
 BSD-2-Clause.
