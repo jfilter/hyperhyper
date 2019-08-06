@@ -57,6 +57,7 @@ class TransformToIndicesClosure(object):
 
 
 def count_tokens(texts):
+    # count again, gensim's dictionary only provides document frequencies
     counts = defaultdict(int)
     for text in texts:
         for token in text:
@@ -65,18 +66,15 @@ def count_tokens(texts):
 
 
 def _texts_to_ids(args):
-    f, to_indices, recount = args[0], args[1], args[2]
+    f, to_indices = args[0], args[1]
     texts = read_pickle(f)
     transformed = [to_indices(t) for t in texts]
     to_pickle(transformed, f)
-    if recount:
-        counts = count_tokens(transformed)
-    else:
-        counts = {}
+    counts = count_tokens(transformed)
     return len(transformed), counts
 
 
-def texts_to_ids(input_text_fns, to_indices, recount):
+def texts_to_ids(input_text_fns, to_indices):
     total_len = 0
     all_counts = []
     with futures.ProcessPoolExecutor() as executor:
@@ -89,9 +87,7 @@ def texts_to_ids(input_text_fns, to_indices, recount):
         with tqdm(total=len(input_text_fns), desc="texts to ids") as pbar:
             while files_left:
                 for this_file in files_iter:
-                    job = executor.submit(
-                        _texts_to_ids, [this_file, to_indices, recount]
-                    )
+                    job = executor.submit(_texts_to_ids, [this_file, to_indices])
                     jobs[job] = this_file
                     if len(jobs) > MAX_JOBS_IN_QUEUE:
                         break  # limit the job submission for now job
@@ -124,15 +120,7 @@ def _build_vocab_from_file(args):
 
 
 class Corpus(SaveLoad):
-    def __init__(
-        self,
-        vocab,
-        preproc_fun,
-        texts=None,
-        input_text_fns=None,
-        recount=False,
-        lang="en",
-    ):
+    def __init__(self, vocab, preproc_fun, texts=None, input_text_fns=None, lang="en"):
         self.vocab = vocab
         self.vocab_size = vocab.size
         self.lang = lang
@@ -140,10 +128,7 @@ class Corpus(SaveLoad):
 
         if texts is None:
             to_indices = TransformToIndicesClosure(self)
-            self.size, counts = texts_to_ids(input_text_fns, to_indices, recount)
-            # count properly if the vocab was constructed on a fraction of the data
-            if recount:
-                self.vocab.dfs = counts
+            self.size, self.counts = texts_to_ids(input_text_fns, to_indices)
             self.input_text_fns = input_text_fns
             self.texts = None
         else:
@@ -152,11 +137,8 @@ class Corpus(SaveLoad):
                 to_indices(t) for t in tqdm(texts, desc="transform to indices")
             ]
             self.texts = transformed
+            self.counts = count_tokens(transformed)
             self.size = len(transformed)
-
-    @property
-    def counts(self):
-        return self.vocab.dfs
 
     def texts_to_file(self, dir, text_chunk_size):
         if self.texts is None:
@@ -243,11 +225,7 @@ class Corpus(SaveLoad):
         voc.filter(**kwargs)
 
         if view_fraction > 0.999:
-            return Corpus(
-                voc, preproc_func, input_text_fns=proc_fns, recount=False, lang=lang
-            )
+            return Corpus(voc, preproc_func, input_text_fns=proc_fns, lang=lang)
 
-        return Corpus(
-            voc, preproc_func, input_text_fns=proc_fns, recount=True, lang=lang
-        )
+        return Corpus(voc, preproc_func, input_text_fns=proc_fns, lang=lang)
 
