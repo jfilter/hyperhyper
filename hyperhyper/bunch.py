@@ -219,17 +219,21 @@ class Bunch:
             return embedding, eval_results
         return embedding
 
-    def to_keyed_vectors(self, embd_matrix, dim):
+    def to_keyed_vectors(self, embd_matrix, dim, delete_unknown=True):
         """
         Transform to gensim's keyed vectors structure for further usage.
         https://github.com/RaRe-Technologies/gensim/blob/develop/gensim/models/keyedvectors.py
         """
         vectors = WordEmbeddingsKeyedVectors(vector_size=dim)
+        tokens = self.corpus.vocab.tokens
+        if delete_unknown:
+            # delete last row (for <UNK> token)
+            embd_matrix = np.delete(embd_matrix, (-1), axis=0)
+        else:
+            # the last token is the UNK token so append it
+            tokens.append('<UNK>')
 
-        # delete last row (for <UNK> token)
-        embd_matrix = np.delete(embd_matrix, (-1), axis=0)
-
-        vectors.add(self.corpus.vocab.tokens, embd_matrix)
+        vectors.add(tokens, embd_matrix)
         return vectors
 
     def eval_sim(self, embd, **kwargs):
