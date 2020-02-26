@@ -7,10 +7,10 @@ import os
 import random
 from collections import defaultdict
 from concurrent import futures
-from math import fabs, sqrt, e
+from math import fabs, sqrt, e, ceil
 
 import numpy as np
-from scipy.sparse import coo_matrix
+from scipy.sparse import coo_matrix, csr_matrix, lil_matrix
 from tqdm import tqdm
 
 from .utils import read_pickle
@@ -38,12 +38,13 @@ def to_count_matrix(pair_counts, vocab_size):
         cols.append(k[1])
         data.append(v)
     # setting to float is important, +1 for UNK
-    # coo matrix is the fastest for constructing the matrix since we have all
+    # COO matrix is the fastest for constructing the matrix since we have all
     # the data already
     count_matrix = coo_matrix(
         (data, (rows, cols)), shape=(vocab_size + 1, vocab_size + 1), dtype=np.float32
     )
-    return count_matrix
+    # CSR matrices support more arithmetic operations and are more efficient
+    return count_matrix.tocsr()
 
 
 def count_pairs_parallel(texts_paths, count_pairs_closure, low_memory):
@@ -188,6 +189,8 @@ def count_pairs(
     # subsample_ratio=0.2,
     seed=1312,
     low_memory=False,
+    low_memory_chunk=100,
+    min_count=0,
 ):
     """
     counting pairs in a corpus
@@ -221,30 +224,43 @@ def count_pairs(
         low_memory=low_memory,
     )
 
+    # already prunning with a `min_count` of 1 can greatly reduces memory usage
+    logger.info(f"Sparseness rate: {count_matrix.nnz / (corpus.vocab.size ** 2)}")
+    if not min_count is None and min_count > 0:
+        count_matrix.data *= count_matrix.data >= min_count
+        count_matrix.eliminate_zeros()
+        logger.info(
+            f"Sparseness rate after pruning: {count_matrix.nnz / (corpus.vocab.size ** 2)}"
+        )
+
     # down sample in a deterministic way
     if subsample == "deter":
         # construct array with appropriate factor
+        logger.info("creating array for the subsampling")
         subsample_value = subsample_factor * corpus.size
         subsampler = np.ones(corpus.vocab.size + 1, dtype=np.float32)
-        logger.info("creating array for the subsampling")
         num_sub = 0
         for word, count in corpus.counts.items():
             if count > subsample_value:
                 subsampler[word] = sqrt(subsample_value / count)
                 num_sub += 1
-        print(f"subsampling applied to {num_sub / corpus.vocab.size} of the tokens")
+        print(
+            f"subsampling applied to {num_sub / (corpus.vocab.size ** 2)} of the tokens"
+        )
 
         if low_memory:
-            # this requires less memory but more time
-            logger.info("using low memory mode for subsampling")
-            indices = zip(*count_matrix.nonzero())
-            total = count_matrix.count_nonzero()
-            # iterating over dok matrix is faster, dense would be even more faster
-            count_matrix = count_matrix.todok()
-            for i, j in tqdm(
-                indices, desc="subsample deterministic (low memory)", total=total
-            ):
-                count_matrix[(i, j)] *= subsampler[i] * subsampler[j]
+            # iterate over all rows in blocks
+            count_matrix = lil_matrix(count_matrix)
+            for i in tqdm(range(ceil((corpus.vocab.size + 1) / low_memory_chunk))):
+                count_matrix[
+                    i * low_memory_chunk : (i + 1) * low_memory_chunk,
+                ] = count_matrix[
+                    i * low_memory_chunk : (i + 1) * low_memory_chunk,
+                ].multiply(
+                    subsampler[i * low_memory_chunk : (i + 1) * low_memory_chunk]
+                    .reshape((-1, 1))
+                    .dot(subsampler.reshape(1, -1))
+                )
         else:
             logger.info("creating subsampler matrix")
             # to 2d matrix
@@ -253,5 +269,6 @@ def count_pairs(
             # elementwise muplication of 2 matrices
             count_matrix = count_matrix.multiply(subsampler)
             logger.info("multiply elementwise: done")
-
-    return count_matrix.tocsr()
+        # in both cases: transform to csr matrix
+        count_matrix = csr_matrix(count_matrix)
+    return count_matrix
