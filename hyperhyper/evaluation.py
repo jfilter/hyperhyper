@@ -89,7 +89,7 @@ def eval_similarity(vectors, token2id, preproc_fun, lang="en"):
 
         full_results.append(
             {
-                "name": data.stem,
+                "name": f"{lang}_{data.stem}",
                 "score": spear_res,
                 "oov": oov,
                 "fullscore": spear_res * (1 - oov),  # consider the portion of OOV
