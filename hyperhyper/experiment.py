@@ -34,11 +34,9 @@ def record(func):
         if len(results) > 1:
             db_dic = {}
             # params to dict
-            print(func.__name__)
             db_dic.update({"method": func.__name__})
             for k, v in kwargs.items():
                 if type(v) is dict:
-                    print("k", k)
                     if k == "pair_args":
                         # merge with default arguments of pair counts
                         v = {**default_pair_args, **v}
@@ -111,3 +109,53 @@ def results_from_db(db, query={}, order="micro_results desc", limit=100):
 
     query_string = f"select distinct * from experiments {where} {order} {limit}"
     return list(db.query(query_string))
+
+
+# TODO
+# def get_embedding_from_params(row):
+#     pair_args = {}
+#     args = {}
+#     for k, v in row.items():
+#         k_parts = k.split("__")
+#         if len(k_parts) > 1:
+#             pair_args[k_parts[1]] = v
+#         else:
+#             arg[k] = v
+
+#     for best in list(db.query(statement)):
+#         oov = True if best["pair_args__delete_oov"] == 1 else False
+#         window = int(best["pair_args__window"])
+#         if not isinstance(window, int):
+#             window = int.from_bytes(window, "little")
+#         neg = float(best["neg"])
+#         if neg.is_integer():
+#             neg = int(neg)
+#         dim = int(best["dim"])
+
+#         print(oov, best)
+#         try:
+#             print(best["neg"])
+#             kv, res = b.svd(
+#                 impl="scipy",
+#                 evaluate=True,
+#                 pair_args={
+#                     "subsample": "deter",
+#                     "subsample_factor": best["pair_args__subsample_factor"],
+#                     "delete_oov": True,
+#                     "decay_rate": best["pair_args__decay_rate"],
+#                     "window": window,
+#                     "dynamic_window": "decay",
+#                 },
+#                 neg=neg,
+#                 eig=best["eig"],
+#                 dim=dim,
+#                 keyed_vector=True,
+#             )
+#             print(res)
+#             print(best)
+#         except Exception as e:
+#             print(e)
+#     return kv
+
+
+# def get_best(db, query):
