@@ -34,8 +34,8 @@ def test_bunch(corpus):
     pmi_matrix, _ = bunch.pmi()
     bunch.eval_sim(pmi_matrix)
     svd_matrix, _ = bunch.svd(dim=2)
-    svd_matrix, _ = bunch.svd(dim=2, keyed_vector=True)
-    svd_matrix = bunch.svd(dim=3, keyed_vector=True, evaluate=False)
+    svd_matrix, _ = bunch.svd(dim=2, keyed_vectors=True)
+    svd_matrix = bunch.svd(dim=3, keyed_vectors=True, evaluate=False)
 
     print(svd_matrix.most_similar("english"))
 
@@ -79,8 +79,8 @@ def test_bunch_text_files():
     pmi_matrix, _ = bunch.pmi()
     bunch.eval_sim(pmi_matrix)
     svd_matrix, _ = bunch.svd(dim=2)
-    svd_matrix, _ = bunch.svd(dim=2, keyed_vector=True)
-    svd_matrix = bunch.svd(dim=2, keyed_vector=True, evaluate=False)
+    svd_matrix, _ = bunch.svd(dim=2, keyed_vectors=True)
+    svd_matrix = bunch.svd(dim=2, keyed_vectors=True, evaluate=False)
 
     print(svd_matrix.most_similar("english"))
 
