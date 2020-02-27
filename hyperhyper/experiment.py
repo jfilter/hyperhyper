@@ -61,8 +61,10 @@ def record(func):
                     db = args[0].get_db()
                     table = db["experiments"]
                     # specify type because dataset guesses them sometimes wrongly
-                    table.insert(
+                    # ensure that rows are not duplicated. This may happen, if the same function is called multiple times.
+                    table.insert_ignore(
                         db_dic,
+                        db_dic.keys(),
                         types={
                             k: sqlalchemy.types.String
                             if type(v) is str
