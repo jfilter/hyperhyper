@@ -136,6 +136,7 @@ class Bunch:
         if evaluate:
             eval_results = self.eval_sim(embd)
         if keyed_vectors:
+            # because of the large dimensions, the matrix will get huge!
             return self.to_keyed_vectors(embd.m.todense(), m.shape[0])
         if evaluate:
             return embd, eval_results
@@ -193,7 +194,7 @@ class Bunch:
         impl="scipy",
         impl_args={},
         pair_args={},
-        keyed_vector=False,
+        keyed_vectors=False,
         evaluate=True,
         **kwargs,
     ):
@@ -213,7 +214,7 @@ class Bunch:
 
         if evaluate:
             eval_results = self.eval_sim(embedding)
-        if keyed_vector:
+        if keyed_vectors:
             embedding = self.to_keyed_vectors(embedding.m, dim)
         if evaluate:
             return embedding, eval_results

@@ -22,8 +22,9 @@ logger = logging.getLogger(__name__)
 
 class Vocab(Dictionary):
     """
-    holds mapping for the integer ids to the tokens (words)
+    Holds mapping for the integer ids to the tokens (words).
     """
+
     def __init__(self, texts=None, **kwargs):
         super().__init__(texts)
         if not texts is None:
@@ -31,7 +32,7 @@ class Vocab(Dictionary):
 
     def filter(self, no_below=0, no_above=1, keep_n=50000, keep_tokens=None):
         """
-        filter with sane defaults
+        Filter extremes with sane defaults.
         """
         self.filter_extremes(
             no_below=no_below, no_above=no_above, keep_n=keep_n, keep_tokens=keep_tokens
@@ -44,14 +45,14 @@ class Vocab(Dictionary):
     @property
     def tokens(self):
         """
-        return tokens as array (in order of id)
+        Return tokens as array (in order of id).
         """
         return [tup[0] for tup in sorted(self.token2id.items(), key=lambda x: x[1])]
 
 
 class TransformToIndicesClosure(object):
     """
-    a closure that is pickable
+    A closure that is pickable, usefull for multiprocessing.
     <UNK> is the last ID (thus vocab_size)
     for sizes: https://docs.python.org/3/library/array.html
     """
@@ -70,7 +71,7 @@ class TransformToIndicesClosure(object):
 
 def count_tokens(texts):
     """
-    count again since gensim's dictionary only provides document frequencies
+    Count token frequencies since gensim's dictionary only provides document frequencies.
     """
     counts = defaultdict(int)
     for text in texts:
@@ -137,6 +138,10 @@ def _build_vocab_from_file(args):
 
 
 class Corpus(SaveLoad):
+    """
+    An object to hold text.
+    """
+
     def __init__(self, vocab, preproc_fun, texts=None, input_text_fns=None, lang="en"):
         self.vocab = vocab
         self.vocab_size = vocab.size
@@ -183,12 +188,12 @@ class Corpus(SaveLoad):
             self.texts = fns
 
     @staticmethod
-    def from_file(input, limit=None, **kwargs):
+    def from_file(input_path, limit=None, **kwargs):
         """
-        Reads a file where each line represents a sentence.
+        Construct a Corpus from a text file with newline-delimited sentences.
         """
         logger.info("reading file")
-        text = Path(input).read_text()
+        text = Path(input_path).read_text()
         lines = text.splitlines()
         if limit is not None:
             lines = lines[:limit]
@@ -200,7 +205,7 @@ class Corpus(SaveLoad):
         texts, vocab=None, preproc_func=tokenize_texts_parallel, lang="en", **kwargs
     ):
         """
-        pass in texts that represent sentences
+        Construct corpus from lists of sentences.
         """
         texts = preproc_func(texts)
         if vocab is None:
@@ -211,7 +216,7 @@ class Corpus(SaveLoad):
     @staticmethod
     def from_texts(texts, preproc_func=texts_to_sents, **kwargs):
         """
-        pass in texts
+        Construct corpus from list of texts.
         """
         return Corpus.from_sents(texts, preproc_func=preproc_func, **kwargs)
 
@@ -220,8 +225,18 @@ class Corpus(SaveLoad):
         base_dir, preproc_func=texts_to_sents, view_fraction=1, lang="en", **kwargs
     ):
         """
-        iterate over ".txt" files in the directory
-        the text files determine the file size for later use
+        Construct a corpus from a folder of text files.
+        The size of the text files determine the working memory size later on.
+        This is usefull for larger amount of text.
+
+        Args:
+            base_dir (str): The directory with the text files.
+            preproc_func (fun): The funcation to preprocess texts into sentences.
+            view_fraction (float): Option to only look at portions of the text to determine the most frequent words.
+            lang (str): The language of the texts, defaults to "en".
+
+        Returns:
+            Corpus
         """
         voc = Vocab()
         input_text_fns = list(Path(base_dir).glob("*.txt"))
@@ -253,9 +268,6 @@ class Corpus(SaveLoad):
 
         # only consider most frequent terms etc.
         voc.filter(**kwargs)
-
-        if view_fraction > 0.999:
-            return Corpus(voc, preproc_func, input_text_fns=proc_fns, lang=lang)
 
         return Corpus(voc, preproc_func, input_text_fns=proc_fns, lang=lang)
 

@@ -186,7 +186,6 @@ def count_pairs(
     delete_oov=True,
     subsample="deter",
     subsample_factor=1e-5,
-    # subsample_ratio=0.2,
     seed=1312,
     low_memory=False,
     low_memory_chunk=100,
@@ -194,6 +193,8 @@ def count_pairs(
 ):
     """
     counting pairs in a corpus
+
+    TODO: instead of giving a subsample_factor, give a portion of tokens to apply subsample
     """
     for x in [dynamic_window, subsample]:
         if not x is None and not x == False:
@@ -244,9 +245,7 @@ def count_pairs(
             if count > subsample_value:
                 subsampler[word] = sqrt(subsample_value / count)
                 num_sub += 1
-        print(
-            f"subsampling applied to {num_sub / (corpus.vocab.size ** 2)} of the tokens"
-        )
+        print(f"subsampling applied to {num_sub / corpus.vocab.size} of the tokens")
 
         if low_memory:
             # iterate over all rows in blocks
