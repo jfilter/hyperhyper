@@ -16,7 +16,7 @@ The other methods exist, because you will run into memory issues for large vocab
 pip install hyperhyper
 ```
 
-If you have an Intel CPU, it's recommended to use the MKL library for performance reasons. The most easy way: Install numpy wiht the provided package by intel on conda.
+If you have an Intel CPU, it's recommended to use the MKL library for performance reasons. The most easy way: Install numpy with this packages that intel provides.
 
 ```bash
 conda install -c intel intelpython3_core
@@ -88,3 +88,9 @@ I tried to the port the orignal software "Hyperwords" to Python 3 but I ended re
 ## License
 
 BSD-2-Clause.
+
+## Sponsoring
+
+This work was created as part of a [project](https://github.com/jfilter/ptf) that was funded by the German [Federal Ministry of Education and Research](https://www.bmbf.de/en/index.html).
+
+<img src="./bmbf_funded.svg">
