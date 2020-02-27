@@ -28,7 +28,7 @@ class Bunch:
         self.db = None
         self.path = Path(path)
 
-        if force_overwrite:
+        if force_overwrite and self.path.exists():
             delete_folder(self.path)
 
         if not corpus is None and not force_overwrite:
@@ -231,7 +231,7 @@ class Bunch:
             embd_matrix = np.delete(embd_matrix, (-1), axis=0)
         else:
             # the last token is the UNK token so append it
-            tokens.append('<UNK>')
+            tokens.append("<UNK>")
 
         vectors.add(tokens, embd_matrix)
         return vectors
