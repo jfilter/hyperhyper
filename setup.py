@@ -7,21 +7,22 @@ classifiers = [
     "Programming Language :: Python :: 3.6",
     "Programming Language :: Python :: 3.7",
     "Programming Language :: Python :: 3.8",
-    "License :: OSI Approved :: MIT License",
-    "Topic :: Utilities",
+    "License :: OSI Approved :: BSD License",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 setup(
     name="hyperhyper",
     version="0.0.0",
     python_requires=">=3.6",
-    description="",
+    description="Python Library to Construct Word Embeddings for Small Data",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/jfilter/hyper-hyper",
     author="Johannes Filter",
     author_email="hi@jfilter.de",
-    license="MIT",
+    license="BSD",
     packages=["hyperhyper"],
     classifiers=classifiers,
     install_requires=[
