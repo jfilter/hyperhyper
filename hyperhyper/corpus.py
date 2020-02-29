@@ -176,6 +176,7 @@ class Corpus(SaveLoad):
             Path(dir).mkdir(parents=True, exist_ok=True)
             for i, f in enumerate(self.input_text_fns):
                 new_path = Path(f"{dir}/texts_{i}.pkl").resolve()
+                # only works if data and bunch are on same file system
                 f.rename(new_path)
                 fns.append(new_path)
             self.texts = fns
