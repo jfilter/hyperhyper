@@ -1,14 +1,17 @@
 # hyperhyper [![Build Status](https://travis-ci.com/jfilter/hyperhyper.svg?branch=master)](https://travis-ci.com/jfilter/hyperhyper) [![PyPI](https://img.shields.io/pypi/v/hyperhyper.svg)](https://pypi.org/project/hyperhyper/) [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/hyperhyper.svg)](https://pypi.org/project/hyperhyper/)
 
-Python library for count-based word embeddings. The easiest way to construct word embeddings from _small data_. Still work in progress.
+Python Library to Construct Word Embeddings for Small Data. Still work in progress.
 
 Building upon the work by Omer Levy et al. for [Hyperwords](https://bitbucket.org/omerlevy/hyperwords).
 
 ## Why?
 
-Training word embeddings on _small_ datasets should be easy. Even though there exists efficient library for creating word embeddings (word2vec, gensim), they focus on large amounts of data. And: They only construct word embeddings _if_ you have enough data. But there exists alternative methods, based on counting and matrix magic. But so far, there wasn't an efficient implementation. This Python library goes into the direction. Although there is still enough possibles for more efficient programming.
+Nowadays, [word embeddings](https://en.wikipedia.org/wiki/Word_embedding) are mostly associated with [Word2vec](https://en.wikipedia.org/wiki/Word2vec) or [fastText](https://en.wikipedia.org/wiki/FastText). Those approaches focus on scenarios, where an abundance of data is available. But to make them work, you also need a lot of data. This is not always the case. There exists alternative methods based on counting word pairs and some math magic around matrix operations. They need less data. This Python library implements the approaches (somewhat) efficiently (but there is there is still room for improvement.)
 
-The other methods exist, because you will run into memory issues for large vocabularies, e.g. 200k words. But for most cases, smaller vocabularies such as 25k or 50k are enough.
+`hyperhyper` is based on [a paper](https://aclweb.org/anthology/papers/Q/Q15/Q15-1016/) from 2015. The authors, Omer Levy et al., published their research code as [Hyperwods](https://bitbucket.org/omerlevy/hyperwords).
+I [tried](https://github.com/jfilter/hyperwords) to the port their original software to Python 3 but I ended up re-writing large parts of it. So this library was born.
+
+Limitations: With `hyperhyper` you will run into (memory) problems, if you need large vocabularies (set of possible words). It's fine if you have a vocabulary up until 50k. Word2vec and fastText especially solve this [curse of dimensionality](https://en.wikipedia.org/wiki/Curse_of_dimensionality).
 
 ## Installation
 
@@ -16,21 +19,28 @@ The other methods exist, because you will run into memory issues for large vocab
 pip install hyperhyper
 ```
 
-If you have an Intel CPU, it's recommended to use the MKL library for performance reasons. The most easy way: Install numpy with this packages that intel provides.
+If you have an Intel CPU, it's recommended to use the MKL library for `numpy`. It can be challening to correctly set up MKL. A package by intel may help you.
 
 ```bash
 conda install -c intel intelpython3_core
 pip install hyperhyper
 ```
 
-Verify mkl_info is not None:
+Verify wheter `mkl_info` is present:
 
 ```python
 >>> import numpy
 >>> numpy.__config__.show()
 ```
 
-For systems using OpenBLAS, I highly recommend setting `export OPENBLAS_NUM_THREADS=1`. This disables its internal multithreading ability, which leads to substantial speedups for this package. Likewise for Intel MKL, `export MKL_NUM_THREADS=1` should be set.
+Disable internal multithreading ability of MKL or OpenBLAS.
+
+```bash
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+```
+
+This speeds up computation because we are using multiprocessing on an outer loop.
 
 ## Usage
 
@@ -55,7 +65,14 @@ vectors.most_similar('berlin')
  ('stockholm', 0.5423270463943481)]
 ```
 
-See [examples](./examples) for more. (TODO)
+See [examples](./examples) for more.
+
+The general concepts:
+
+-   Preprocess data once and save them in a `bunch`
+-   Cache all results and also record their perfomance on test data
+
+More documenation may be forthcoming. Until then you have to read the [source code](./hyperhyper).
 
 ## Scientific Background
 
@@ -66,14 +83,18 @@ This software is based on the following papers:
 -   The Influence of Down-Sampling Strategies on SVD Word Embedding Stability, Johannes Hellrich, Bernd Kampe, Udo Hahn, NAACL 2019. [Paper](https://aclweb.org/anthology/papers/W/W19/W19-2003/) [Code](https://github.com/hellrich/hyperwords) [Code](https://github.com/hellrich/embedding_downsampling_comparison)
     > The stability of word embedding algorithms, i.e., the consistency of the word representations they reveal when trained repeatedly on the same data set, has recently raised concerns. We here compare word embedding algorithms on three corpora of different sizes, and evaluate both their stability and accuracy. We find strong evidence that down-sampling strategies (used as part of their training procedures) are particularly influential for the stability of SVD-PPMI-type embeddings. This finding seems to explain diverging reports on their stability and lead us to a simple modification which provides superior stability as well as accuracy on par with skip-gram embedding
 
-I tried to the port the orignal software "Hyperwords" to Python 3 but I ended re-writing large parts of it. However, here is my version on Github: https://github.com/jfilter/hyperwords
-
 ## Development
 
 1. Install [pipenv](https://docs.pipenv.org/en/latest/).
 2. `git clone https://github.com/jfilter/hyperhyper && cd hyperhyper && pipenv install && pipenv shell`
 3. `python -m spacy download en_core_web_sm`
 4. `pytest tests`
+
+## Contributing
+
+If you have a **question**, found a **bug** or want to propose a new **feature**, have a look at the [issues page](https://github.com/jfilter/hyperhyper/issues).
+
+**Pull requests** are especially welcomed when they fix bugs or improve the code quality.
 
 ## Future Work / TODO
 
