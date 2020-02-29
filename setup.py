@@ -14,7 +14,7 @@ classifiers = [
 
 setup(
     name="hyperhyper",
-    version="0.0.0",
+    version="0.1.0",
     python_requires=">=3.6",
     description="Python Library to Construct Word Embeddings for Small Data",
     long_description=long_description,
