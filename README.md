@@ -71,6 +71,7 @@ The general concepts:
 
 -   Preprocess data once and save them in a `bunch`
 -   Cache all results and also record their perfomance on test data
+-   Make it easy to fine-tune paramters for you data
 
 More documenation may be forthcoming. Until then you have to read the [source code](./hyperhyper).
 
