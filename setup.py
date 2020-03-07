@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 with open("README.md", "r") as fh:
     long_description = fh.read()
@@ -19,11 +19,16 @@ setup(
     description="Python Library to Construct Word Embeddings for Small Data",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/jfilter/hyper-hyper",
+    url="https://github.com/jfilter/hyperhyper",
     author="Johannes Filter",
     author_email="hi@jfilter.de",
     license="BSD",
-    packages=["hyperhyper"],
+    packages=find_packages(),
+    package_data={
+        # include evaluation datasets
+        "": ["*.txt"]
+    },
+    zip_safe=True,
     classifiers=classifiers,
     install_requires=[
         "dataset==1.*",
