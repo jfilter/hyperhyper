@@ -8,15 +8,15 @@ import logging
 from pathlib import Path
 from timeit import default_timer as timer
 
+import dataset
 import numpy as np
 from gensim.models.keyedvectors import WordEmbeddingsKeyedVectors
-
-import dataset
 
 from . import evaluation, pair_counts, pmi, svd
 from .corpus import Corpus
 from .experiment import record, results_from_db
-from .utils import delete_folder, load_arrays, load_matrix, save_arrays, save_matrix
+from .utils import (delete_folder, load_arrays, load_matrix, save_arrays,
+                    save_matrix)
 
 logger = logging.getLogger(__name__)
 

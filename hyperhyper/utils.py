@@ -2,12 +2,12 @@
 utility functions for i/o and other general funtionality
 """
 
-from  concurrent import futures
 import logging
 import math
 import os
 import pickle
 from collections import defaultdict
+from concurrent import futures
 
 import numpy as np
 from scipy.sparse import csr_matrix

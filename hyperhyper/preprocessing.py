@@ -5,11 +5,8 @@ simple text preprocessing such as cleaning and tokenization
 import os
 import re
 
-from gensim.parsing.preprocessing import (
-    preprocess_string,
-    strip_non_alphanum,
-    strip_tags,
-)
+from gensim.parsing.preprocessing import (preprocess_string,
+                                          strip_non_alphanum, strip_tags)
 from tqdm import tqdm
 
 from .utils import map_pool

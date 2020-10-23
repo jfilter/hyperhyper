@@ -14,7 +14,8 @@ from gensim.corpora import Dictionary
 from gensim.utils import SaveLoad
 from tqdm import tqdm
 
-from .preprocessing import texts_to_sents, tokenize_texts, tokenize_texts_parallel
+from .preprocessing import (texts_to_sents, tokenize_texts,
+                            tokenize_texts_parallel)
 from .utils import chunks, dsum, read_pickle, to_pickle
 
 logger = logging.getLogger(__name__)

@@ -7,7 +7,7 @@ import os
 import random
 from collections import defaultdict
 from concurrent import futures
-from math import fabs, sqrt, e, ceil
+from math import ceil, e, fabs, sqrt
 
 import numpy as np
 from scipy.sparse import coo_matrix, csr_matrix, lil_matrix
