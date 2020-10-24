@@ -1,0 +1,41 @@
+[tool.poetry]
+authors = ["Johannes Filter <hi@jfilter.de>"]
+classifiers = [
+  "Programming Language :: Python :: 3.6",
+  "Programming Language :: Python :: 3.7",
+  "Programming Language :: Python :: 3.8",
+  "License :: OSI Approved :: BSD License",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+description = "Python package to construct word embeddings for small data"
+keywords = ["natural-language-processing", "word-embeddings", "ppmi", "pmi"]
+license = "BSD-2-Clause"
+name = "hyperhyper"
+readme = "README.md"
+repository = "https://github.com/jfilter/hyperhyper"
+version = "0.1.1"
+
+[tool.poetry.dependencies]
+dataset = "1.*"
+gensim = "3.*"
+importlib_resources = {version = "*", python = "<= 3.6"}
+python = ">= 3.6"
+tqdm = "*"
+
+scikit-learn = {version = "*", optional = true}
+spacy = {version = "2.*", optional = true}
+
+[tool.poetry.dev-dependencies]
+black = "*"
+pylint = "*"
+pytest = "^5.2"
+scikit-learn = "*"
+spacy = "*"
+
+[tool.poetry.extras]
+full = ["scikit-learn", "spacy"]
+
+[build-system]
+build-backend = "poetry.core.masonry.api"
+requires = ["poetry-core>=1.0.0"]

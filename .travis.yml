@@ -5,14 +5,13 @@ python:
     - "3.7"
     - "3.8"
 
-# Pipfile is only for Python3.7
 install:
-    - if [[ $TRAVIS_PYTHON_VERSION != 3.7 ]]; then rm Pipfile.lock; fi
-    - pip3 install pipenv
-    - pipenv install
-    - pipenv run python3 -m spacy download en_core_web_sm
+    - pip install poetry
+    - if [[ $TRAVIS_PYTHON_VERSION == 3.6 ]]; then rm poetry.lock; fi
+    - poetry install
+    - poetry run python -m spacy download en_core_web_sm
 
-script: pipenv run pytest
+script: poetry run pytest
 
 notifications:
     email: false

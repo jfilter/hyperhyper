@@ -86,10 +86,8 @@ This software is based on the following papers:
 
 ## Development
 
-1. Install [pipenv](https://docs.pipenv.org/en/latest/).
-2. `git clone https://github.com/jfilter/hyperhyper && cd hyperhyper && pipenv install && pipenv shell`
-3. `python -m spacy download en_core_web_sm`
-4. `pytest tests`
+Install and use [poetry](https://python-poetry.org/).
+
 
 ## Contributing
 
@@ -100,7 +98,6 @@ If you have a **question**, found a **bug** or want to propose a new **feature**
 ## Future Work / TODO
 
 -   evaluation for analogies
--   replace pipenv if they still don't ship any newer release
 -   implement counting in a more efficient programming language, e.g. Cython.
 
 ## Why is this library named `hyperhyper`?
