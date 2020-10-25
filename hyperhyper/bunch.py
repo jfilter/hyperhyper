@@ -250,6 +250,19 @@ class Bunch:
             **kwargs,
         )
 
+    def eval_analogy(self, embd, **kwargs):
+        """
+        Evaluate the performance on word analogies datasets.
+        NB: The corpus has to be initialized with the correct language.
+        """
+        return evaluation.eval_analogies(
+            embd,
+            self.corpus.vocab.token2id,
+            self.corpus.preproc_fun,
+            lang=self.corpus.lang,
+            **kwargs,
+        )
+
     def results(self, **kwargs):
         """
         Retrieve evaluation results from the database.

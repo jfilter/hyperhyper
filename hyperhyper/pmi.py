@@ -6,6 +6,7 @@ See: https://en.wikipedia.org/wiki/Pointwise_mutual_information
 import heapq
 
 import numpy as np
+from gensim import matutils
 from scipy.sparse import csr_matrix, dok_matrix
 
 
@@ -87,3 +88,18 @@ class PPMIEmbedding:
         """
         scores = self.m.dot(self.represent(w).T).T.tocsr()
         return heapq.nlargest(n, zip(scores.data, scores.indices))
+
+
+    # TODO: working?
+    def most_similar_vectors(self, positives, negatives, topn=10):
+        """
+        Some parts taken from gensim.
+        https://github.com/RaRe-Technologies/gensim/blob/ea87470e4c065676d3d33df15b8db4192b30ebc1/gensim/models/keyedvectors.py#L690
+        """
+        mean = [np.squeeze(self.represent(x).toarray()) for x in positives] + [-1 * np.squeeze(self.represent(x).toarray()) for x in negatives]
+        mean = matutils.unitvec(np.array(mean).mean(axis=0)).astype(np.float32)
+
+        dists = self.m.dot(mean)
+
+        best = matutils.argsort(dists, topn=topn, reverse=True)
+        return [(best_idx, float(dists[best_idx])) for best_idx in best]

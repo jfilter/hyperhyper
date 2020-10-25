@@ -34,12 +34,17 @@ def test_bunch(corpus):
     pmi_matrix, _ = bunch.pmi()
     bunch.eval_sim(pmi_matrix)
 
+    bunch.eval_analogy(pmi_matrix)
+
     # testing the evaluation of pmi
     english_idx = corpus.vocab.token2id["english"]
     wikipedia_idx = corpus.vocab.token2id["wikipedia"]
     for sim, token_idx in pmi_matrix.most_similar(english_idx):
         assert pmi_matrix.similarity(english_idx, token_idx) == pmi_matrix.similarity(token_idx, english_idx)
         assert pmi_matrix.similarity(english_idx, token_idx) == sim
+
+    pmi_matrix.most_similar_vectors([english_idx], [wikipedia_idx])
+
     svd_matrix, _ = bunch.svd(dim=2)
 
     # testing the evaluation of svd
