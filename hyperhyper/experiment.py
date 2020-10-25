@@ -52,7 +52,7 @@ def record(func):
                 db_dic.update({f"{r['name']}_oov": r["oov"]})
                 db_dic.update({f"{r['name']}_fullscore": r["fullscore"]})
 
-            # couldn't figure out the timeout param for datasets
+            # Couldn't figure out the timeout param for datasets so keep retrying.
             while True:
                 try:
                     # args[0] is self
