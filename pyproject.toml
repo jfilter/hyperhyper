@@ -9,7 +9,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 description = "Python package to construct word embeddings for small data"
-keywords = ["natural-language-processing", "word-embeddings", "ppmi", "pmi"]
+keywords = ["natural-language-processing", "word-embeddings", "ppmi", "pmi", "pmi-svd"]
 license = "BSD-2-Clause"
 name = "hyperhyper"
 readme = "README.md"
