@@ -33,14 +33,28 @@ def test_bunch(corpus):
     bunch = hyperhyper.Bunch("test_bunch", corpus, force_overwrite=True)
     pmi_matrix, _ = bunch.pmi()
     bunch.eval_sim(pmi_matrix)
+
+    # testing the evaluation of pmi
+    english_idx = corpus.vocab.token2id["english"]
+    wikipedia_idx = corpus.vocab.token2id["wikipedia"]
+    for sim, token_idx in pmi_matrix.most_similar(english_idx):
+        assert pmi_matrix.similarity(english_idx, token_idx) == pmi_matrix.similarity(token_idx, english_idx)
+        assert pmi_matrix.similarity(english_idx, token_idx) == sim
     svd_matrix, _ = bunch.svd(dim=2)
+
+    # testing the evaluation of svd
+    english_idx = corpus.vocab.token2id["english"]
+    for sim, token_idx in svd_matrix.most_similar(english_idx):
+        assert svd_matrix.similarity(english_idx, token_idx) == svd_matrix.similarity(token_idx, english_idx)
+        assert svd_matrix.similarity(english_idx, token_idx) == sim
+
     svd_matrix, _ = bunch.svd(dim=2, keyed_vectors=True)
     svd_matrix = bunch.svd(dim=3, keyed_vectors=True, evaluate=False)
 
-    print(svd_matrix.most_similar("english"))
+    # `most_similar` comes from gensim's keyedvectors
+    svd_matrix.most_similar("english")
 
     assert pmi_matrix.m.count_nonzero() > 0
-    # hyperhyper.evaluation.eval_similarity(svd_matrix)
 
 
 def test_db_query(corpus):
@@ -85,4 +99,3 @@ def test_bunch_text_files():
     print(svd_matrix.most_similar("english"))
 
     assert pmi_matrix.m.count_nonzero() > 0
-    # hyperhyper.evaluation.eval_similarity(svd_matrix)
