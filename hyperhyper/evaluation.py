@@ -1,8 +1,8 @@
 """
-evaluate the performance of an embedding
+Evaluate the performance of embeddings with word simularities and word analogies.
 
-cant use the evaluation stuff in gensim because the keyed vector strucutre does not ork for PPMI
-non keyed vectors (used for PPMI)
+Can't use the evaluation methods in gensim because the keyed vector structure does not work for PPMI.
+So we have to caculate the metrics ourselves.
 """
 
 from pathlib import Path
@@ -14,9 +14,8 @@ from . import evaluation_datasets
 
 try:
     from importlib.resources import path
-
 except ImportError:
-    # Try backported to PY<37 `importlib_resources`.
+    # backport for Python <3.7
     from importlib_resources import path
 
 
@@ -43,34 +42,30 @@ def to_item(li):
 
 
 def setup_test_tokens(p, keep_len):
+    """
+    Read in traning data from files and discard comments (etc.)
+    """
     lines = Path(p).read_text().split("\n")
     lines = [l.split() for l in lines]
     lines = [l for l in lines if len(l) == keep_len]
-    return lines
+    return zip(*lines)
 
 
 def eval_similarity(vectors, token2id, preproc_fun, lang="en"):
     """
-    word similarity
+    evaluate word similarity on several test datasets
     """
-    line_counts = []
-    spear_results = []
-    full_results = []
+    line_counts, spear_results, full_results = [], [], []
 
     for data in read_test_data(lang, "ws"):
         results = []
 
-        lines = setup_test_tokens(data, 3)
-        token1 = [x[0] for x in lines]
-        token2 = [x[1] for x in lines]
-        sims = [x[2] for x in lines]
-
+        token1, token2, sims = setup_test_tokens(data, 3)
         # preprocess tokens 'in batch'
-        token1 = preproc_fun(token1)
-        token2 = preproc_fun(token2)
-        for x, y, sim in zip(token1, token2, sims):
-            x = to_item(x)
-            y = to_item(y)
+        token1, token2 = preproc_fun(token1), preproc_fun(token2)
+        lines = list(zip(token1, token2, sims))
+        for x, y, sim in lines:
+            x, y = to_item(x), to_item(y)
 
             # skip over OOV
             if x is None or y is None:
@@ -78,9 +73,11 @@ def eval_similarity(vectors, token2id, preproc_fun, lang="en"):
 
             if x in token2id and y in token2id:
                 results.append((vectors.similarity(token2id[x], token2id[y]), sim))
+
         if len(results) == 0:
             print("not enough results for this dataset: ", data.name)
             continue
+
         actual, expected = zip(*results)
         spear_res = spearmanr(actual, expected)[0]
         spear_results.append(spear_res)
