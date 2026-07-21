@@ -64,8 +64,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       # --resolution lowest-direct: oldest version satisfying each declared
-      # bound. --no-sources/--only-binary keeps it to real wheels, so this
-      # measures what a user actually gets rather than a source build.
-      - run: uv pip install --only-binary :all: --resolution lowest-direct -e ".[full]" "pytest>=8"
+      # bound. --only-binary keeps it to real wheels, so this measures what a
+      # user actually gets rather than a source build.
+      # (quoted: the ":all: " in --only-binary is a mapping to bare YAML)
+      - run: 'uv pip install --only-binary :all: --resolution lowest-direct -e ".[full]" "pytest>=8"'
       - run: uv pip list
       - run: uv run --no-sync pytest -m "not slow"
