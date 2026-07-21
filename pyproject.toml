@@ -24,7 +24,10 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Information Analysis",
 ]
 dependencies = [
-  "dataset>=1.6,<3",
+  # 2.0 is the floor, not 1.6: dataset 1.x predates SQLAlchemy 2 and dies with
+  # `add_column() takes 3 positional arguments but 4 were given`. Found by the
+  # `floor` CI job, which resolved 1.6.0 on 3.10 while 3.13 already got 2.0.0.
+  "dataset>=2,<3",
   "gensim>=4.4,<5",
   "numpy>=1.26",
   # 1.12 is the floor, not 1.11: sparse.diags_array (used by calc_pmi and the
@@ -70,6 +73,9 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "T20"]
+# the benchmark's whole output is a printed table; `reference.py` is a frozen
+# snapshot of pair_counts.py and is deliberately kept verbatim
+"bench/**" = ["T20"]
 
 [tool.ruff.format]
 docstring-code-format = true
