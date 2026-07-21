@@ -397,6 +397,16 @@ def count_pairs(
         ),
     )
 
+    # `count_pairs_parallel` returns None when there are no text chunks at all,
+    # i.e. an empty corpus. Raise a clear error here -- where the corpus is in
+    # scope -- rather than returning a degenerate (1x1) zero matrix that only
+    # detonates two layers downstream in PMI/SVD with a far less obvious message.
+    if count_matrix is None:
+        raise ValueError(
+            "cannot count pairs on an empty corpus: no text chunks were "
+            "produced. Did `Corpus.from_texts([])` receive any documents?"
+        )
+
     # already prunning with a `min_count` of 1 can greatly reduces memory usage
     logger.info("Sparseness rate: %s", count_matrix.nnz / (corpus.vocab.size**2))
     if min_count is not None and min_count > 0:

@@ -1,6 +1,10 @@
+import subprocess
+import sys
+
 import pytest
 
 import hyperhyper
+from hyperhyper.bunch import _canonical
 from hyperhyper.preprocessing import texts_to_sents, tokenize_texts
 
 
@@ -224,6 +228,82 @@ def test_dict_to_path_does_not_collide(corpus, bunch_path):
     assert bunch.dict_to_path("svd", {"dim": 500.0}) == bunch.dict_to_path(
         "svd", {"dim": 500}
     )
+
+
+# a set whose `repr` order is hash-randomised across `PYTHONHASHSEED` values
+_DIGEST_SCRIPT = (
+    "from hyperhyper.bunch import Bunch;"
+    "import types;"
+    "b = Bunch.__new__(Bunch);"
+    "b.path = __import__('pathlib').Path('/x');"
+    "print(b.dict_to_path('svd', {'tags': {'a', 'b', 'c', 'd', 'e', 'f'}}).name)"
+)
+
+
+def test_canonical_sorts_sets_deterministically():
+    """
+    Regression test for BUG 4: a `set` was serialised via `repr`, whose order is
+    hash-randomised, so the cache digest changed run to run. `_canonical` now
+    turns a set into a sorted list.
+    """
+    assert _canonical({"c", "a", "b"}) == ["a", "b", "c"]
+    assert _canonical(frozenset({3, 1, 2})) == [1, 2, 3]
+    # nested inside the containers the cache key is actually built from
+    assert _canonical({"k": {"y", "x"}}) == {"k": ["x", "y"]}
+
+
+def test_canonical_rejects_unserialisable_values():
+    """
+    BUG 4: rather than falling back to `repr` (unstable for many types),
+    `_canonical` refuses anything `json.dumps` cannot handle natively.
+    """
+    with pytest.raises(TypeError):
+        _canonical(object())
+
+
+def test_scalar_params_do_not_collide():
+    """
+    BUG 4 must not regress the property that `True`, `None`, `1` and `"1"` map to
+    distinct cache keys (they serialise to `true`, `null`, `1` and `"1"`).
+    """
+    import json
+
+    encoded = {json.dumps(_canonical(v)) for v in (True, False, None, 1, 0, "1", "0")}
+    assert len(encoded) == 7
+
+
+def test_cache_digest_is_stable_across_hash_seeds():
+    """
+    BUG 4, end to end: the same set-valued parameter must hash to the same cache
+    file name in two processes started with different `PYTHONHASHSEED`, or a
+    sweep silently misses its own cache from one run to the next.
+    """
+
+    def digest(seed):
+        out = subprocess.run(
+            [sys.executable, "-c", _DIGEST_SCRIPT],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={"PYTHONHASHSEED": str(seed), "PATH": __import__("os").environ["PATH"]},
+        )
+        return out.stdout.strip()
+
+    seeds = [digest(s) for s in (0, 1, 2, 12345)]
+    assert len(set(seeds)) == 1, seeds
+
+
+def test_svd_dim_larger_than_vocab_does_not_crash(corpus, bunch_path):
+    """
+    BUG 2, through the public API: a `dim` at or above the vocabulary size used
+    to crash the default `scipy` backend with an opaque ARPACK `ValueError`. It
+    must now clamp and succeed, returning an embedding no wider than the rank.
+    """
+    bunch = hyperhyper.Bunch(bunch_path, corpus, force_overwrite=True)
+    vocab = corpus.vocab.size + 1
+    embedding, _ = bunch.svd(dim=vocab + 50)
+    assert 0 < embedding.m.shape[1] < vocab
+    assert embedding.m.shape[0] == vocab
 
 
 def test_record_binds_positional_and_default_arguments(corpus, bunch_path):

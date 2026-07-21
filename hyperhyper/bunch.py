@@ -103,16 +103,37 @@ def _canonical(value):
 
     Integral floats become ints (`dim=500.0` and `dim=500` are the same run),
     and the same is done inside nested containers.
+
+    Sets and frozensets are turned into a *sorted* list: a `set`'s iteration
+    order is hash-randomised (it changes with `PYTHONHASHSEED`), so serialising
+    one via `repr` gave a different digest -- and a silent cache miss -- on every
+    run. Anything `json.dumps` cannot serialise natively is rejected rather than
+    stringified through `repr` (whose output is likewise unstable for many
+    types), so a cache key is always reproducible or is loudly refused.
     """
     if isinstance(value, bool):
         return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else value
+    if value is None or isinstance(value, str):
+        return value
     if isinstance(value, Mapping):
         return {str(k): _canonical(v) for k, v in value.items()}
+    if isinstance(value, set | frozenset):
+        items = [_canonical(v) for v in value]
+        # sort by a canonical serialisation so heterogeneous but JSON-able
+        # elements (which need not be mutually `<`-comparable) still order
+        # deterministically
+        return sorted(items, key=lambda e: json.dumps(e, sort_keys=True))
     if isinstance(value, list | tuple):
         return [_canonical(v) for v in value]
-    return value
+    raise TypeError(
+        f"cannot build a stable cache key from a {type(value).__name__!r} "
+        f"value ({value!r}): cache parameters must be JSON-serialisable "
+        f"(str, int, float, bool, None, or mappings/sequences/sets of those)"
+    )
 
 
 def _readable_prefix(params):
@@ -215,7 +236,11 @@ class Bunch:
         `impl_args` and `pair_args` sharing a key name mapped to one slot.
         """
         canonical = _canonical(dict(params))
-        blob = json.dumps(canonical, sort_keys=True, default=repr)
+        # no `default=` fallback: `_canonical` has already turned every value
+        # into something `json.dumps` handles natively, or raised. A `repr`
+        # fallback here is what let a hash-randomised `set` through in the first
+        # place.
+        blob = json.dumps(canonical, sort_keys=True)
         digest = hashlib.blake2b(blob.encode("utf-8"), digest_size=8).hexdigest()
 
         prefix = _readable_prefix(canonical)
@@ -404,7 +429,11 @@ class Bunch:
         if evaluate:
             eval_results = self.eval_sim(embedding)
         if keyed_vectors:
-            embedding = self.to_keyed_vectors(embedding.m, dim)
+            # `calc_svd` may hand back fewer columns than `dim` (a rank-deficient
+            # or over-large request is clamped/truncated), so take the width from
+            # the embedding itself -- for a normal `dim < rank` request this is
+            # exactly `dim`.
+            embedding = self.to_keyed_vectors(embedding.m, embedding.m.shape[1])
         if evaluate:
             return embedding, eval_results
         return embedding

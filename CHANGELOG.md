@@ -103,6 +103,28 @@ Everything below is user-visible; several items change numeric results.
 
 ### Fixed
 
+-   **`svd()` was non-deterministic when `dim` exceeded the matrix rank.** Past
+    the numerical rank the extra singular values are ~0 and their singular
+    vectors are arbitrary null-space directions; under the default `eig=0` those
+    got full weight, and `scipy`'s ARPACK seeds them from a random start vector,
+    so the same corpus and parameters gave different neighbours run to run.
+    Reachable through the default `bunch.svd()` (`dim=500`) on any small-vocab or
+    heavily-pruned corpus. `calc_svd` now drops components below the numerical
+    rank tolerance, which makes `eig=0` deterministic and the three impls agree;
+    the normal `dim < rank` path is unchanged.
+-   **`dim >= vocab` crashed the default `svd()`** with an opaque
+    `ValueError: k must satisfy 0 < k < min(A.shape)` on `scipy`, while `gensim`
+    and `scikit` silently returned different dimensions. `dim` is now clamped to
+    `min(shape) - 1` in `calc_svd`; an all-zero matrix (e.g. a huge `neg`) raises
+    a clear error instead of `ArpackError: Starting vector is zero`.
+-   **An empty corpus raised `AttributeError`** from `count_matrix.nnz` on a
+    `None`; it now raises a clear `ValueError` naming the cause.
+-   **The cache digest was unstable across runs for `set`-valued parameters.**
+    `dict_to_path` fell back to `repr` for non-JSON values, and set repr order is
+    hash-randomized, so the same params hashed differently across processes and
+    silently missed the cache. `_canonical` now sorts sets and rejects
+    non-serialisable values outright. Not reachable through the documented
+    scalar parameters; hardening only.
 -   **Analogy evaluation was always exactly 0.0.** Three separate bugs:
     `most_similar_vectors` returns `[(idx, score), ...]`, so the `b_ in guesses`
     membership test could never be true; the 3CosAdd arithmetic was inverted

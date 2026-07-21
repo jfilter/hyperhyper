@@ -41,13 +41,19 @@ def calc_svd(matrix, dim, impl, impl_args):
             (randomized ``randomized_svd``; requires scikit-learn).
         impl_args (dict): extra keyword arguments forwarded to the backend.
 
+    ``dim`` is clamped to ``min(shape) - 1`` and any component whose singular
+    value is numerical noise is dropped (see ``_drop_negligible_components``), so
+    the result may have *fewer* than ``dim`` columns for a rank-deficient or
+    over-large request; a full-rank ``dim < rank`` request is untouched.
+
     Returns:
-        Tuple ``(ut, s)``: left singular vectors (``dim`` columns) and the
+        Tuple ``(ut, s)``: left singular vectors (up to ``dim`` columns) and the
         matching singular values in descending order.
 
     Raises:
         ImportError: if ``impl="scikit"`` but scikit-learn is not installed.
-        ValueError: if ``impl`` is not a recognized backend.
+        ValueError: if ``impl`` is not a recognized backend, or the matrix is
+            empty/all-zero/numerically rank 0.
 
     truncated SVD:
     scipy: https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.svd.html
@@ -58,6 +64,34 @@ def calc_svd(matrix, dim, impl, impl_args):
 
     Check out the comparision: https://github.com/jfilter/sparse-svd-benchmark
     """
+    # Clamp the request *here*, at the single point all three backends pass
+    # through, rather than in `bunch.svd_matrix`: `calc_svd` is also called
+    # directly (the tests do, with a bare `.m` wrapper and no `Bunch`), and each
+    # backend reacts differently to an over-large `dim` -- `svds` raises
+    # `ValueError: k must satisfy 0 < k < min(A.shape)`, while gensim and scikit
+    # silently return a *different* number of columns. Clamping to
+    # `min(shape) - 1` (the most ARPACK can resolve) makes all three agree on the
+    # effective dim, and the arrays `svd_matrix` keys on disk with it. The cache
+    # path stays keyed on the *requested* dim, which is harmless: a clamped run
+    # is deterministic, so it always reproduces the same cached arrays.
+    n_rows, n_cols = matrix.m.shape
+    max_dim = min(n_rows, n_cols) - 1
+    if max_dim < 1:
+        raise ValueError(
+            f"cannot factorize a {n_rows}x{n_cols} matrix: at least a 2x2 "
+            f"matrix is needed to extract one singular component"
+        )
+    if matrix.m.nnz == 0:
+        # An all-zero (S)PPMI matrix (e.g. a `neg` large enough to shift every
+        # entry below the clip) has no singular directions at all; `svds` would
+        # raise the opaque `ArpackError: Starting vector is zero`.
+        raise ValueError(
+            "cannot factorize an all-zero matrix (every singular value is "
+            "zero); check `neg`/`min_count`, which may have emptied the "
+            "(S)PPMI matrix"
+        )
+    dim = min(dim, max_dim)
+
     if impl == "scipy":
         ut, s, _ = svds(matrix.m, k=dim, **impl_args)
         # `svds` returns the singular values ascending, `gensim`/`scikit` return
@@ -81,7 +115,47 @@ def calc_svd(matrix, dim, impl, impl_args):
     else:
         raise ValueError(f"unknown SVD impl: {impl!r}")
 
-    return ut, s
+    return _drop_negligible_components(ut, s, matrix.m)
+
+
+def _drop_negligible_components(ut, s, m):
+    """
+    Discard singular vectors whose singular value is numerical noise.
+
+    When ``dim`` exceeds the matrix's numerical rank, the surplus singular values
+    are ~0 and their singular *vectors* are arbitrary null-space directions: a
+    different one every time, because ``svds`` (ARPACK) starts from an unseeded
+    random vector. Under the default ``eig=0`` ``SVDEmbedding`` uses those columns
+    verbatim, so the same matrix and parameters gave *different* nearest
+    neighbours run to run, and the three backends disagreed.
+
+    Dropping the negligible columns -- matching gensim's own truncation -- makes
+    ``eig=0`` deterministic (pairwise similarities are invariant to the
+    orthonormal basis and to the per-run sign/rotation of the kept subspace, so
+    once every backend keeps the *same* set of significant directions they agree)
+    and cannot re-enter regardless of ``eig``.
+
+    The tolerance is ``s.max() * max(shape) * eps`` -- the standard numerical-rank
+    threshold (cf. ``numpy.linalg.matrix_rank``). ``eps`` is taken at the matrix's
+    own precision (float32 for a PPMI matrix), which is where the ~1e-6 noise
+    floor actually comes from. For a full-rank ``dim < rank`` request no column
+    is negligible and the arrays are returned bit-unchanged.
+    """
+    if s.size == 0:
+        raise ValueError("SVD returned no components")
+    dtype = m.dtype
+    eps = np.finfo(dtype if np.issubdtype(dtype, np.floating) else np.float32).eps
+    tol = s.max() * max(m.shape) * eps
+    keep = s > tol
+    if not keep.any():
+        raise ValueError(
+            "the matrix is numerically rank 0 (all singular values are "
+            "negligible); there is nothing to embed"
+        )
+    if keep.all():
+        # full rank at this dim -- hand back the exact arrays, untouched
+        return ut, s
+    return ut[:, keep], s[keep]
 
 
 class SVDEmbedding:

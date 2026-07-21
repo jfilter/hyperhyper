@@ -75,6 +75,18 @@ def test_subsample_scaling_factor_is_hand_computable(uniform_corpus):
     assert scaled == pytest.approx(0.1 * base, rel=1e-6)
 
 
+def test_empty_corpus_raises_a_clear_error(tmp_path):
+    """
+    Regression test for BUG 3: an empty corpus produces no text chunks, so
+    `count_pairs_parallel` returns None and `count_matrix.nnz` used to raise an
+    opaque `AttributeError: 'NoneType' object has no attribute 'nnz'`. It must
+    raise a clear, actionable error instead.
+    """
+    corpus = hyperhyper.Corpus.from_texts([], preproc_func=tokenize_texts)
+    with pytest.raises(ValueError, match="empty corpus"):
+        hyperhyper.count_pairs(corpus)
+
+
 def test_count(corpus_on_disk):
     pair_c = hyperhyper.count_pairs(corpus_on_disk)
     assert pair_c.shape == (corpus_on_disk.vocab.size + 1,) * 2
