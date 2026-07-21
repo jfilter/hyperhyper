@@ -2,7 +2,9 @@
 Correctness gate for the upcoming vectorization of `hyperhyper/pair_counts.py`.
 
 `bench/reference.py` holds a frozen snapshot of the counting code as of git SHA
-671c91b. Every test here runs the *live* `hyperhyper.count_pairs` and the
+f68cc74 plus the merge-order change that made the summation order independent of
+the local core count (that file's header records why it was re-taken and how far
+the results moved). Every test here runs the *live* `hyperhyper.count_pairs` and the
 *frozen* `reference_count_pairs` over the same corpus and the same arguments and
 compares the two matrices. Right now the live code and the snapshot are the same
 code, so everything passes trivially -- that is the point. Once
@@ -249,7 +251,7 @@ def _assert_bit_identical(corpus, window, dynamic_window, subsample, seed):
         live,
         ref,
         err_msg=(
-            f"live count_pairs diverged from the frozen 671c91b reference for "
+            f"live count_pairs diverged from the frozen f68cc74 reference for "
             f"window={window} dynamic_window={dynamic_window!r} "
             f"subsample={subsample!r} seed={seed}. This configuration draws no "
             f"random numbers, so the matrices must match bit for bit."

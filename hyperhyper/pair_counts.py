@@ -2,6 +2,7 @@
 construct a co-occurrence matrix by counting word pairs (co-locations of words)
 """
 
+import inspect
 import logging
 import random
 import time
@@ -77,33 +78,32 @@ POOL_SPEEDUP_MARGIN = 1.3
 PROBE_SENTENCES = 2000
 
 
-def merge_order(texts_paths, workers):
+def merge_order(texts_paths):
     """
     The order the partial matrices are summed in -- a hard-wired contract, not
     an implementation detail.
 
     float32 addition is not associative, so the summation order is part of the
     answer: on this package's own corpora, reordering it moves ~500 cells of the
-    matrix by ~2e-4 for any configuration whose counts are not integers
-    (`dynamic_window` of "deter" with window>2, or "decay"). The order below --
-    consecutive groups of `2 * workers + 1` files in corpus order, sorted within
-    each group -- is what the previous scheduling loop happened to produce, and
-    `tests/test_pair_counts_equivalence.py` holds the result to it bit for bit.
+    matrix by up to ~2e-4 (about 2 ulps, ~3e-7 relative) for any configuration
+    whose counts are not integers (`dynamic_window` of "deter" with window>2, or
+    "decay"). Configurations whose counts are exact in float32 -- window=1, or
+    `dynamic_window=None`, or window=2 with "deter", whose counts are multiples
+    of 0.5 -- are unaffected by any reordering at all.
+
+    Sorting by path is one single canonical order: it depends on nothing but the
+    chunk file names, so it is the same on every machine, on every run, at any
+    core count. That is exact, not probabilistic -- the same numbers are added in
+    the same sequence everywhere.
 
     Pinning it here is what makes the rest of this module free to schedule
-    however it likes: *which* worker finishes *when* no longer has any influence
-    on the result, because the merge no longer consults completion order at all.
-
-    Known wart, inherited and deliberately not changed: `workers` is the local
-    core count, so two machines with different core counts still produce
-    matrices that differ in the last bits. Fixing that means picking a fixed
-    group size, which would change every cached matrix.
+    however it likes: *which* worker finishes *when* has no influence on the
+    result, because the merge does not consult completion order at all. Note
+    that lexicographic order is not numeric order once a corpus has ten or more
+    chunks (`texts_10.pkl` sorts before `texts_2.pkl`); that is fine, all that is
+    required of the order is that it be fixed.
     """
-    group = workers * 2 + 1
-    order = []
-    for i in range(0, len(texts_paths), group):
-        order.extend(sorted(texts_paths[i : i + group]))
-    return order
+    return sorted(texts_paths)
 
 
 def _estimate_serial_seconds(texts_paths, count_pairs_closure):
@@ -195,7 +195,10 @@ def count_pairs_parallel(texts_paths, count_pairs_closure):
         return None
 
     workers = _default_workers()
-    order = merge_order(texts_paths, workers)
+    order = merge_order(texts_paths)
+    # purely a memory knob: the merge is a strict left fold over `order`, so how
+    # that order is sliced into groups changes only how many partial matrices
+    # are resident at once, never the sum
     group = workers * 2 + 1
 
     if _pool_is_worth_starting(texts_paths, count_pairs_closure, workers):
@@ -317,19 +320,6 @@ def iterate_tokens(
     return res
 
 
-# storing the default values here again to re-use them when writing to the db
-# TODO: implement in a more elegant way
-default_pair_args = MappingProxyType(
-    {
-        "window": 2,
-        "dynamic_window": "deter",
-        "decay_rate": 0.25,
-        "delete_oov": True,
-        "subsample": "deter",
-        "subsample_factor": 1e-5,
-    }
-)
-
 VALID_MODES = frozenset({"deter", "prob", "off", "decay"})
 
 
@@ -363,7 +353,11 @@ def count_pairs(
     """
     counting pairs in a corpus
 
-    TODO: instead of giving a subsample_factor, give a portion of tokens to apply subsample
+    `subsample_factor` is word2vec's `sample` parameter: a word is subsampled
+    once its count exceeds `subsample_factor * total_tokens`, and kept with
+    probability `sqrt(threshold / count)` above that. Keeping the word2vec
+    convention (rather than, say, a fraction of the vocabulary) is deliberate,
+    so a value can be carried over from a word2vec/hyperwords setup unchanged.
     """
     for x in (dynamic_window, subsample):
         if x is not None and x is not False and x not in VALID_MODES:
@@ -440,3 +434,17 @@ def count_pairs(
         count_matrix = scaled
         logger.info("scaling with the subsampler: done")
     return count_matrix
+
+
+# The pair-count defaults, for `record` to write alongside a result in the db.
+# Derived from the signature rather than restated, so the two cannot drift: a
+# hand-written copy here used to omit `seed` and `min_count`, so a run using
+# their defaults recorded no value for them and `results(query={"min_count": 0})`
+# found nothing. `corpus` is dropped -- it has no default and is not a parameter.
+default_pair_args = MappingProxyType(
+    {
+        name: param.default
+        for name, param in inspect.signature(count_pairs).parameters.items()
+        if param.default is not inspect.Parameter.empty
+    }
+)

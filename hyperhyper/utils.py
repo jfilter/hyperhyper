@@ -3,7 +3,6 @@ utility functions for i/o and other general funtionality
 """
 
 import logging
-import math
 import os
 import pickle
 from collections import defaultdict
@@ -68,23 +67,15 @@ def chunks(seq, n):
         yield seq[i : i + n]
 
 
-def combine_chunks(chunks):
-    for c in chunks:
-        yield from c
-
-
-def map_pool_chunks(
-    array, fun, num_chunks=100, chunk_size=None, combine=True, **kwargs
-):
-    if chunk_size is None:
-        chunk_size = math.ceil(len(array) / num_chunks)
-    results = map_pool(chunks(array, chunk_size), fun, total=len(array), **kwargs)
-    if combine:
-        results = list(combine_chunks(results))
-    return results
-
-
 def map_pool(array, fun, total=None, desc=None, process_chunksize=100):
+    """
+    Apply `fun` to every item of `array` across a process pool.
+
+    `process_chunksize` is the batching that matters: `Executor.map` hands each
+    worker that many items per task and flattens the results incrementally, so
+    batching the input by hand beforehand only bundles twice and serialises the
+    work back onto one worker.
+    """
     with futures.ProcessPoolExecutor(_default_workers()) as executor:
         if desc is None:
             return list(executor.map(fun, array, chunksize=process_chunksize))

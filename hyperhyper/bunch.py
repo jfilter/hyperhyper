@@ -22,7 +22,6 @@ from . import evaluation, pair_counts, pmi, svd
 from .corpus import Corpus
 from .experiment import record, results_from_db
 from .utils import (
-    _default_workers,
     delete_folder,
     load_arrays,
     load_matrix,
@@ -46,23 +45,34 @@ _UNSAFE_IN_NAME = re.compile(r"[^0-9A-Za-z.=+-]+")
 # keep file names comfortably below any file system limit
 _READABLE_PREFIX_MAX = 60
 
-# How many text chunks to aim for per worker. The chunk files are the *only*
+# How many text chunks to cut a corpus into. The chunk files are the *only*
 # unit of parallelism `count_pairs` has -- one task per chunk -- so the chunk
 # count, not the chunk size, is what decides whether the machine is used. The
-# old fixed 100k default produced 3 chunks for a 250k-sentence corpus, which on
-# a 10-core machine is a hard ceiling of 3x however many cores are present, and
-# measured out at 1.8x because the three chunks did not take equal time.
+# old fixed 100k-sentence default produced 3 chunks for a 250k-sentence corpus,
+# which on a 10-core machine is a hard ceiling of 3x however many cores are
+# present, and measured out at 1.8x because the three chunks did not take equal
+# time.
 #
-# Swept on 250k- and 500k-sentence corpora, 1 to 8 chunks per worker: the wall
-# clock is flat to within noise from 1 to 6 (5.58-5.70s at 250k) and only starts
-# to slip at 8 (6.12s), where the per-chunk overhead -- a pickled sparse matrix
-# back to the parent, plus one more step in a merge that has to stay a strict
-# left fold -- begins to show. So this is not a peak, it is the middle of a
-# plateau, chosen for the headroom rather than for a measured advantage: chunks
-# do not cost the same (the three chunks of the 250k corpus took 7.0s, 10.9s and
-# 3.8s, a 2.9x spread), and at one chunk per worker that spread lands directly
-# on the wall clock with nothing left to rebalance with.
-CHUNKS_PER_WORKER = 4
+# This is a FIXED number and deliberately not `workers * k`. The chunk layout is
+# part of the *answer*, not part of the schedule: each chunk is counted into its
+# own float32 matrix and those are then summed, so cutting the same corpus into
+# a different number of pieces gives a different matrix. Deriving the count from
+# the local core count would mean an 8-core and a 16-core machine building the
+# same bunch from scratch could not reproduce each other's numbers. The pool
+# size is still `_default_workers()` -- only the data partitioning is pinned.
+#
+# 40 is what a 10-core machine produced under the previous `workers * 4` rule,
+# and it is the value the 1.68x speedup on the 250k corpus (3 chunks -> 40) was
+# measured with. It was swept on 250k- and 500k-sentence corpora at 1 to 8
+# chunks per worker: the wall clock is flat to within noise from 1 to 6
+# (5.58-5.70s at 250k) and only starts to slip at 8 (6.12s), where the per-chunk
+# overhead -- a pickled sparse matrix back to the parent, plus one more step in
+# a merge that has to stay a strict left fold -- begins to show. 40 sits in the
+# middle of that plateau, so it keeps its headroom on machines with fewer or
+# more cores than the one it was measured on: chunks do not cost the same (the
+# three chunks of the 250k corpus took 7.0s, 10.9s and 3.8s, a 2.9x spread), and
+# a chunk count near the core count leaves nothing to rebalance that spread with.
+TARGET_TEXT_CHUNKS = 40
 
 # Floor: below this, a chunk stops being worth a task at all -- the round trip
 # through the pool costs more than the counting.
@@ -73,13 +83,17 @@ MIN_TEXT_CHUNK_SIZE = 500
 MAX_TEXT_CHUNK_SIZE = 100_000
 
 
-def _auto_text_chunk_size(n_texts, workers=None):
+def _auto_text_chunk_size(n_texts):
     """
     Pick a chunk size that gives the pool a sensible number of chunks to spread.
+
+    A pure function of the corpus size: the same corpus is cut the same way on
+    every machine, so a bunch built from scratch elsewhere counts the same
+    partial matrices (see `TARGET_TEXT_CHUNKS`).
     """
-    workers = _default_workers() if workers is None else workers
-    target_chunks = max(1, workers * CHUNKS_PER_WORKER)
-    size = math.ceil(n_texts / target_chunks) if n_texts > 0 else MIN_TEXT_CHUNK_SIZE
+    size = (
+        math.ceil(n_texts / TARGET_TEXT_CHUNKS) if n_texts > 0 else MIN_TEXT_CHUNK_SIZE
+    )
     return max(MIN_TEXT_CHUNK_SIZE, min(size, MAX_TEXT_CHUNK_SIZE))
 
 
@@ -121,7 +135,7 @@ class Bunch:
         `text_chunk_size` is how many sentences go into one on-disk text chunk.
         It still means exactly what it always did and an explicit value is still
         honoured verbatim; only the default has changed, from a fixed 100000 to
-        `None`, which sizes the chunks from the corpus and the core count (see
+        `None`, which sizes the chunks from the corpus alone (see
         `_auto_text_chunk_size`). The old default was a parallelism ceiling in
         disguise: it is a *size*, and what `count_pairs` needs is a *count*.
         """

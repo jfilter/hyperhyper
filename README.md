@@ -57,11 +57,8 @@ results["results"][1]
  "fullscore": ...}       # score, penalized by the out-of-vocabulary fraction
 
 vectors.most_similar("berlin")
->>> [("vienna", 0.6323208808898926),
- ("frankfurt", 0.5965485572814941),
- ("munich", 0.5737138986587524),
- ("amsterdam", 0.5511572360992432),
- ("stockholm", 0.5423270463943481)]
+>>> [("vienna", ...), ("frankfurt", ...), ("munich", ...),
+ ("amsterdam", ...), ("stockholm", ...)]
 ```
 
 Check out the [examples](./examples).

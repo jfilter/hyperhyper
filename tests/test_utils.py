@@ -4,15 +4,16 @@ from scipy.sparse import csr_matrix
 from hyperhyper import utils
 
 
-def foo(li):
-    return [pow(x, 10) for x in li]
+def raise_to_the_tenth(x):
+    return pow(x, 10)
 
 
-def test_map_chunks():
+def test_map_pool_preserves_length_and_order():
     some_list = list(range(100))
-    results = utils.map_pool_chunks(some_list, foo, chunk_size=10, combine=True)
+    results = utils.map_pool(some_list, raise_to_the_tenth)
     assert len(results) == 100
     assert results[50] == pow(50, 10)
+    assert results == [pow(x, 10) for x in some_list]
 
 
 def test_dsum():

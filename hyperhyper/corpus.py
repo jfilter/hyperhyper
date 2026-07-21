@@ -185,8 +185,15 @@ class Corpus(SaveLoad):
         """
         directory = Path(directory)
         if self.texts is None:
-            # re-use the texts that were created for initialization of the corpus
-            # TODO: make use of chunk size?
+            # Re-use the per-input-file pickles written during vocab building,
+            # one chunk per input file. `text_chunk_size` is deliberately NOT
+            # applied here: re-splitting would change the chunk filenames, and
+            # the pair-count RNG is seeded per file (`random.Random(f"{seed}-
+            # {name}")`), so `subsample="prob"` results would shift; the moved
+            # chunk boundaries would also change the float32 merge for the
+            # deterministic modes. The file-based path's granularity is the
+            # user's input-file granularity by design. Split the input up front
+            # to give the pool more chunks.
             fns = []
             directory.mkdir(parents=True, exist_ok=True)
             for i, f in enumerate(self.input_text_fns):

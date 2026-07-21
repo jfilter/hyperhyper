@@ -207,6 +207,54 @@ Everything below is user-visible; several items change numeric results.
     `corpus.texts` with the paths it had just written, so the second bunch
     pickled those paths as if they were token lists and the workers died with
     `'PosixPath' object is not iterable`.
+-   **`tokenize_texts_parallel` nested process pools.**
+    `Corpus.from_text_files(preproc_func=tokenize_texts_parallel)` runs the
+    preprocessing inside a pool of `workers` processes, each of which then
+    started its own pool -- asking for `workers**2` processes. It now stays
+    serial inside a worker.
+
+### Performance
+
+Measured by profiling a 250k-sentence corpus, which refuted the assumption the
+work started from: `count_pairs` is 8.6% of a `bunch.svd()` and the per-token
+loop ~24% of that, so ~2% end to end. The two real costs were the SVD (54%)
+and evaluation (28%).
+
+-   **Evaluation no longer spawns a process pool per preprocessing call.** It
+    spawned 12, each child re-importing the package, to perform 0.07s of
+    tokenization. `tokenize_texts_parallel` now falls back to the serial
+    tokenizer below `PARALLEL_MIN_CHARS`. **`eval_similarity` 40.78s ->
+    0.087s (468x)**, with every per-dataset score verified bit-identical.
+-   **`import spacy` is lazy.** It cost 2.2s on every pool spawn and is only
+    needed by `texts_to_sents`.
+-   **The default `text_chunk_size` is derived rather than fixed.** It is a
+    size where the pool needs a count: 250k sentences produced 3 chunks, so
+    10 cores delivered 1.8x. **`count_pairs` 8.58s -> 5.10s.** Explicit
+    `text_chunk_size` values are unchanged in meaning; values `< 1` now raise.
+-   **`count_pairs` stays serial when a pool would not pay for itself**,
+    decided by timing a probe chunk rather than by a constant -- the same
+    corpus runs at 4.3 or 0.54 us/token depending on `subsample`, an 8x spread
+    no fixed threshold can straddle. Incidentally takes the equivalence test
+    suite from 478.9s to 8.7s.
+-   `merge_order()` makes the summation order an explicit contract, so which
+    worker finishes when no longer influences the result at all.
+
+### Reproducibility
+
+-   **Counting results no longer depend on the machine's core count.** Both the
+    partial-matrix merge order (grouped by `2 * workers + 1`) and the automatic
+    chunk size (`workers * 4` chunks) were derived from the local core count, so
+    an 8-core and a 16-core machine produced matrices differing in the last bits
+    -- the merge summed in a different order, and the chunking split the corpus
+    differently. `merge_order()` is now `sorted(paths)` and the chunk count is a
+    fixed `TARGET_TEXT_CHUNKS`; the pool size stays the core count. Building the
+    same bunch on two machines now yields byte-identical matrices. The frozen
+    equivalence reference was re-taken for this; results move by at most 2-3
+    float32 ulps (max 2.4e-4) versus the previous core-count-dependent output.
+-   **`default_pair_args` is derived from the `count_pairs` signature** instead
+    of a hand-written copy that had already drifted: it omitted `seed` and
+    `min_count`, so a run using their defaults recorded no value for them and
+    `results(query={"min_count": 0})` matched nothing.
 
 ### Changed
 

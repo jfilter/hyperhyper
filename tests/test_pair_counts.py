@@ -5,8 +5,9 @@ import numpy as np
 import pytest
 
 import hyperhyper
-from hyperhyper import bunch, pair_counts
+from hyperhyper import bunch, pair_counts, utils
 from hyperhyper.preprocessing import tokenize_texts
+from hyperhyper.utils import read_pickle
 
 
 @pytest.fixture()
@@ -287,29 +288,37 @@ def test_single_chunk_never_starts_a_pool(varied_corpus, monkeypatch, tmp_path):
     assert hyperhyper.count_pairs(varied_corpus).nnz > 0
 
 
-def test_merge_order_is_batched_and_sorted_within_a_batch():
+def test_merge_order_is_sorted_by_path():
     """
     The summation order is part of the answer (float32 addition is not
-    associative), so it is pinned here as well as in the equivalence suite:
-    consecutive groups of `2 * workers + 1` paths in corpus order, each group
-    sorted lexicographically. Note `texts_10` sorts before `texts_2`.
+    associative), so it is pinned here as well as in the equivalence suite: one
+    canonical order, sorted lexicographically, taking no argument that could
+    make it differ between machines. Note `texts_10` sorts before `texts_2`.
     """
     paths = [f"texts_{i}.pkl" for i in range(12)]
-    assert pair_counts.merge_order(paths, workers=2) == (
-        sorted(paths[:5]) + sorted(paths[5:10]) + sorted(paths[10:])
-    )
-    # a single group, and lexicographic rather than numeric
-    assert pair_counts.merge_order(paths, workers=10)[:3] == [
+    assert pair_counts.merge_order(paths) == sorted(paths)
+    assert pair_counts.merge_order(paths)[:3] == [
         "texts_0.pkl",
         "texts_1.pkl",
         "texts_10.pkl",
     ]
+    # the input order must not survive into the output
+    assert pair_counts.merge_order(list(reversed(paths))) == sorted(paths)
 
 
 def test_merge_order_covers_every_chunk_exactly_once():
     paths = [f"texts_{i}.pkl" for i in range(37)]
-    for workers in (1, 2, 3, 10, 64):
-        assert sorted(pair_counts.merge_order(paths, workers)) == sorted(paths)
+    assert sorted(pair_counts.merge_order(paths)) == sorted(paths)
+
+
+def test_merge_order_takes_no_worker_count():
+    """
+    The old signature was `merge_order(paths, workers)` and the core count was
+    what made the result machine-dependent. Passing one now has to be an error
+    rather than being quietly accepted and ignored.
+    """
+    with pytest.raises(TypeError):
+        pair_counts.merge_order(["texts_0.pkl"], 10)
 
 
 # --------------------------------------------------------------------------
@@ -327,20 +336,22 @@ def test_auto_chunk_size_gives_the_pool_something_to_spread():
     three chunks, so a ten-core machine could not use more than three of them.
     """
     n = 250_000
-    size = bunch._auto_text_chunk_size(n, workers=10)
+    size = bunch._auto_text_chunk_size(n)
     n_chunks = math.ceil(n / size)
-    assert n_chunks >= 10 * bunch.CHUNKS_PER_WORKER
+    assert n_chunks == bunch.TARGET_TEXT_CHUNKS
     # and the old default really was the bug
     assert math.ceil(n / 100_000) < 10
 
 
-@pytest.mark.parametrize("workers", [1, 2, 4, 10, 64])
-def test_auto_chunk_size_tracks_the_worker_count(workers):
-    n = 4_000_000
-    size = bunch._auto_text_chunk_size(n, workers=workers)
-    assert math.ceil(n / size) >= min(
-        workers * bunch.CHUNKS_PER_WORKER, math.ceil(n / bunch.MIN_TEXT_CHUNK_SIZE)
-    )
+def test_auto_chunk_size_hits_the_target_chunk_count():
+    """
+    Between the two clamps, the corpus is cut into exactly
+    `TARGET_TEXT_CHUNKS` pieces -- that number, not the core count, is what the
+    parallelism is bought with.
+    """
+    for n in (100_000, 250_000, 500_000, 1_000_000):
+        size = bunch._auto_text_chunk_size(n)
+        assert math.ceil(n / size) == bunch.TARGET_TEXT_CHUNKS
 
 
 def test_auto_chunk_size_stays_within_its_bounds():
@@ -349,9 +360,225 @@ def test_auto_chunk_size_stays_within_its_bounds():
     cost more than the counting), and a huge one must not put an unbounded
     number of sentences into a single worker's memory.
     """
-    assert bunch._auto_text_chunk_size(10, workers=10) == bunch.MIN_TEXT_CHUNK_SIZE
-    assert bunch._auto_text_chunk_size(0, workers=10) == bunch.MIN_TEXT_CHUNK_SIZE
-    assert bunch._auto_text_chunk_size(10**9, workers=10) == bunch.MAX_TEXT_CHUNK_SIZE
+    assert bunch._auto_text_chunk_size(10) == bunch.MIN_TEXT_CHUNK_SIZE
+    assert bunch._auto_text_chunk_size(0) == bunch.MIN_TEXT_CHUNK_SIZE
+    assert bunch._auto_text_chunk_size(10**9) == bunch.MAX_TEXT_CHUNK_SIZE
+
+
+# --------------------------------------------------------------------------
+# machine independence: the same corpus must give the same matrix everywhere
+# --------------------------------------------------------------------------
+#
+# The tests above pin *what* the order and the chunking are. These pin the
+# property those choices exist for, and they are the ones that would have caught
+# the bug: up to f68cc74 both the summation order (`workers * 2 + 1` groups) and
+# the chunk count (`workers * 4`) were functions of the local core count, so two
+# machines with different core counts produced different matrices for the same
+# corpus and the same arguments.
+#
+# The configurations are chosen so the test can actually fail. `window=2
+# dynamic_window="deter"` (the shipped default) and `dynamic_window=None` are
+# immune to ANY reordering -- their counts are 1.0 and multiples of 0.5, exact
+# in float32 -- so they would pass against a still-broken implementation and
+# prove nothing. window=5 "deter" and "decay" were measured to move 760-900
+# cells of 3721 by up to 4.883e-04 on the fixture below when the order changed,
+# which is the sensitivity this test needs.
+ORDER_SENSITIVE_CONFIGS = [
+    {"window": 5, "dynamic_window": "deter", "subsample": None},
+    {"window": 5, "dynamic_window": "decay", "subsample": None},
+    {"window": 10, "dynamic_window": "decay", "subsample": "deter"},
+]
+
+# 1 takes the serial route (a one-worker pool is never worth starting), the rest
+# fan out. Under the old rule these give merge groups of 3, 7, 15 and 33 over the
+# 25 chunks of `order_sensitive_corpus`, i.e. four genuinely different orders --
+# `test_the_old_merge_order_really_did_depend_on_the_worker_count` below checks
+# that they really do disagree, so these tests cannot quietly go vacuous.
+SIMULATED_WORKER_COUNTS = (1, 3, 7, 16)
+
+
+@pytest.fixture(scope="module")
+def order_sensitive_corpus(tmp_path_factory):
+    """
+    A corpus on which the merge order demonstrably matters.
+
+    Two properties are load-bearing and neither is automatic:
+
+      * a Zipfian vocabulary, so the per-chunk matrices have wildly different
+        magnitudes and adding them in a different order actually rounds
+        differently. A uniform corpus cancels almost all of it -- measured: the
+        same sweep on a flat 60-word vocabulary moved a single cell, and would
+        have let a still-broken implementation pass.
+      * 25 chunks, enough that the old `workers * 2 + 1` grouping produces
+        several groups. At 10 chunks every worker count in the sweep gives one
+        or two groups and the old bug is invisible (measured: 0 cells).
+
+    Under the old implementation this fixture moves up to 900 of its 3721 cells
+    across `SIMULATED_WORKER_COUNTS`, by up to 4.883e-04.
+    """
+    rng = random.Random(20260721)
+    alphabet = "abcdefghijklmnopqrstuvwxyz"
+    words = [alphabet[i // 26] + alphabet[i % 26] for i in range(60)]
+    weights = [1.0 / (i + 1) for i in range(60)]
+    sents = [" ".join(rng.choices(words, weights=weights, k=10)) for _ in range(1000)]
+    corpus = hyperhyper.Corpus.from_texts(sents, preproc_func=tokenize_texts)
+    corpus.texts_to_file(tmp_path_factory.mktemp("order") / "texts", 40)
+    assert len(corpus.texts) == 25
+    return corpus
+
+
+def _old_merge_order(texts_paths, workers):
+    """
+    The pre-f68cc74 order: consecutive groups of `2 * workers + 1` paths in
+    corpus order, each group sorted. Kept here purely so the test below can show
+    that the corpus and configuration it uses are ones the old rule got wrong.
+    """
+    group = workers * 2 + 1
+    return [
+        p
+        for i in range(0, len(texts_paths), group)
+        for p in sorted(texts_paths[i : i + group])
+    ]
+
+
+def _count_with_workers(corpus, workers, monkeypatch, merge=None, **kwargs):
+    with monkeypatch.context() as m:
+        m.setattr(pair_counts, "_default_workers", lambda: workers)
+        if merge is not None:
+            m.setattr(pair_counts, "merge_order", merge)
+        _force_pool(m)
+        return hyperhyper.count_pairs(corpus, **kwargs).toarray()
+
+
+@pytest.mark.parametrize("config", ORDER_SENSITIVE_CONFIGS[:1])
+def test_result_is_independent_of_the_worker_count_fast(
+    order_sensitive_corpus, monkeypatch, config
+):
+    """
+    One order-sensitive configuration at two worker counts, kept in the fast
+    suite so a regression is noticed without waiting for the full sweep.
+    """
+    _assert_same_across_worker_counts(
+        order_sensitive_corpus, monkeypatch, config, (3, 16)
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("config", ORDER_SENSITIVE_CONFIGS)
+def test_result_is_independent_of_the_worker_count(
+    order_sensitive_corpus, monkeypatch, config
+):
+    """
+    The guarantee `merge_order` now makes, stated positively.
+
+    Each worker count changes the pool size, the in-flight window and the merge
+    grouping -- everything the old implementation let leak into the sum. The
+    matrices must come out `array_equal`, not `allclose`: a reordered float32
+    sum is exactly the kind of last-bit difference `allclose` waves through, and
+    it is the difference this test exists to forbid.
+    """
+    _assert_same_across_worker_counts(
+        order_sensitive_corpus, monkeypatch, config, SIMULATED_WORKER_COUNTS
+    )
+
+
+def test_the_old_merge_order_really_did_depend_on_the_worker_count(
+    order_sensitive_corpus, monkeypatch
+):
+    """
+    Keeps the two tests above honest.
+
+    They assert that varying the worker count changes nothing -- an assertion
+    that also passes on a corpus where the summation order never mattered in the
+    first place, which is how a machine-independence test rots into a no-op. So
+    this one runs the SAME corpus and configuration through the old
+    core-count-dependent order and demands that it *does* disagree with itself.
+    If this test ever starts failing, the fixture has gone insensitive and the
+    tests above have stopped proving anything.
+    """
+    config = ORDER_SENSITIVE_CONFIGS[0]
+    matrices = [
+        _count_with_workers(
+            order_sensitive_corpus,
+            workers,
+            monkeypatch,
+            merge=lambda paths, w=workers: _old_merge_order(paths, w),
+            **config,
+        )
+        for workers in SIMULATED_WORKER_COUNTS
+    ]
+    differing = max((m != matrices[0]).sum() for m in matrices[1:])
+    assert differing > 100, (
+        f"the old core-count-dependent merge order moved only {differing} cells "
+        f"on this fixture, so it is no longer a demonstration of the bug and the "
+        f"machine-independence tests above are not proving anything"
+    )
+
+
+def _assert_same_across_worker_counts(corpus, monkeypatch, config, worker_counts):
+    reference = None
+    for workers in worker_counts:
+        matrix = _count_with_workers(corpus, workers, monkeypatch, **config)
+        if reference is None:
+            reference = matrix
+            assert reference.sum() > 0, "degenerate corpus -- nothing was counted"
+            continue
+        np.testing.assert_array_equal(
+            matrix,
+            reference,
+            err_msg=(
+                f"{config} gave a different matrix at {workers} workers than at "
+                f"{worker_counts[0]}. The result must not depend on the core "
+                f"count of the machine it was computed on."
+            ),
+        )
+
+
+def test_chunking_is_independent_of_the_worker_count(monkeypatch):
+    """
+    The same guarantee one layer down, and the more important half of it: a
+    different chunk *count* means different partial matrices, not merely the
+    same ones summed in a different order. `_auto_text_chunk_size` used to call
+    `_default_workers()`; it must now ignore it entirely.
+    """
+    for n_texts in (1_000, 250_000, 4_000_000):
+        sizes = set()
+        for workers in (1, 2, 4, 10, 64, 256):
+            with monkeypatch.context() as m:
+                # both the source and the name `bunch` would import it under,
+                # so the patch bites whichever way the dependency comes back
+                m.setattr(utils, "_default_workers", lambda w=workers: w)
+                m.setattr(bunch, "_default_workers", lambda w=workers: w, raising=False)
+                sizes.add(bunch._auto_text_chunk_size(n_texts))
+        assert len(sizes) == 1, (
+            f"{n_texts} sentences were chunked {len(sizes)} different ways "
+            f"depending on the core count: {sorted(sizes)}"
+        )
+
+
+def test_bunch_writes_the_same_chunks_whatever_the_core_count(tmp_path, monkeypatch):
+    """
+    End to end through `Bunch`, which is where the chunk layout is actually
+    committed to disk. Two machines building the same bunch from scratch -- the
+    "reproduce your result" case -- must lay it out identically.
+    """
+    corpus = hyperhyper.Corpus.from_texts(
+        ["a b c d e f"] * 20_000, preproc_func=tokenize_texts
+    )
+    layouts = []
+    for workers in (2, 10, 64):
+        with monkeypatch.context() as m:
+            m.setattr(bunch, "_default_workers", lambda w=workers: w, raising=False)
+            b = hyperhyper.Bunch(tmp_path / f"w{workers}", corpus)
+            try:
+                layouts.append([len(t) for t in map(read_pickle, b.corpus.texts)])
+            finally:
+                b.close()
+    assert layouts[0] == layouts[1] == layouts[2], (
+        f"the corpus was cut differently per core count: "
+        f"{[len(x) for x in layouts]} chunks"
+    )
+    assert len(layouts[0]) == bunch.TARGET_TEXT_CHUNKS
 
 
 def test_explicit_chunk_size_is_still_honoured(tmp_path):

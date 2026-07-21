@@ -463,7 +463,7 @@ provides-extras = ["full"]
 [package.metadata.requires-dev]
 dev = [
     { name = "click", specifier = ">=8.1,<9" },
-    { name = "pytest", specifier = ">=8" },
+    { name = "pytest", specifier = ">=9.0.3" },
     { name = "ruff", specifier = ">=0.9" },
     { name = "scikit-learn", specifier = ">=1.4" },
     { name = "spacy", specifier = ">=3.7,<4" },

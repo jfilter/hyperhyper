@@ -2,18 +2,42 @@
 FROZEN SNAPSHOT of the pair-counting implementation.
 
     source:  hyperhyper/pair_counts.py
-    git SHA: 671c91b  (branch `modernize-2026`)
-
-`hyperhyper/pair_counts.py` is unchanged from 671c91b through fa3127b (the
-commits in between touch only pyproject.toml, uv.lock and CI), so this snapshot
-is current for any of them. Verify with:
-
-    git diff 671c91b HEAD -- hyperhyper/pair_counts.py
+    git SHA: f68cc74  (branch `modernize-2026`) + the merge-order change
+    taken:   2026-07-22
 
 This file is a deliberate, verbatim-as-possible copy of the counting code as it
 stood at that revision. It exists so that an optimized rewrite of
 `hyperhyper/pair_counts.py` can be checked against the behaviour it is supposed
 to preserve, by `tests/test_pair_counts_equivalence.py`.
+
+WHY THIS SNAPSHOT WAS RE-TAKEN (it was NOT an accidental rebaseline)
+--------------------------------------------------------------------
+The previous snapshot was taken at 671c91b. It was replaced for one reason:
+MACHINE INDEPENDENCE. Up to f68cc74 the summation order was "consecutive groups
+of `_default_workers() * 2 + 1` chunks, each group sorted by path", i.e. it was
+a function of the local core count -- so an 8-core and a 16-core machine summed
+the same partial matrices in different orders and, because float32 addition is
+not associative, got matrices differing in the last bits. `merge_order` now
+returns a single canonical `sorted(texts_paths)`, which depends on nothing but
+the chunk file names. (`hyperhyper/bunch.py` had the same disease, worse: the
+chunk *count* was `workers * 4`, so the two machines counted different partial
+matrices rather than merely summing the same ones differently. It is now a fixed
+`TARGET_TEXT_CHUNKS`.)
+
+That change breaks bit-identity against the old snapshot BY CONSTRUCTION. It was
+measured before being accepted, over the full deterministic grid (48 cells, the
+1000-sentence / 25-chunk grid corpus, on a 10-core machine):
+
+    * 26 of the 48 cells are bit-identical even so -- every configuration whose
+      counts are exact in float32 (window=1, `dynamic_window=None`, and window=2
+      with "deter", whose counts are multiples of 0.5).
+    * the other 22 move 132 to 565 cells out of 3721, i.e. 3.5% to 15%.
+    * the largest absolute move anywhere in the grid is 2.441e-04, and the
+      largest relative move is 3.3e-07 -- two to three float32 ulps, which is
+      exactly the size of a reordered float32 sum and nothing more.
+
+So this snapshot encodes the NEW, machine-independent order. Anything that
+breaks against it now is a real change in the arithmetic, not a reordering.
 
 RULES FOR THIS FILE
 -------------------
@@ -21,7 +45,9 @@ RULES FOR THIS FILE
   snapshot; the point is to detect *changes*, not to be right.
 * Do NOT import the counting logic from `hyperhyper.pair_counts`. The moment
   this file imports the thing it is supposed to check, it checks nothing.
-  (`_default_workers` is the one exception, see `_merge_order` below.)
+  There are now no exceptions: the previous snapshot had to import
+  `_default_workers` to reproduce the core-count-dependent merge order, and
+  that crutch is gone with the dependency.
 * Only update the snapshot together with a deliberate, reviewed decision that
   the output of `count_pairs` is *meant* to change -- and bump the SHA above.
 
@@ -36,18 +62,15 @@ spawned workers is fragile.
 Instead `_count_pairs_serial` below reproduces that summation order exactly, in
 a single process. That matters for bit-identity because float32 addition is not
 associative: adding the same chunk matrices in a different order gives a
-different matrix. The order the live driver produces is
+different matrix. The order the live driver produces is now simply
 
-    * chunks are submitted in `texts_paths` order until more than
-      MAX_JOBS_IN_QUEUE = _default_workers() * 2 are in flight,
-    * that whole batch is drained before anything else is submitted,
-    * and the drained batch is added in `sorted()` (lexicographic path) order.
+    * every chunk path in `sorted()` (lexicographic) order,
 
-so the accumulation order is: consecutive batches of `_default_workers() * 2 + 1`
-chunks, each batch internally sorted by path. Note that lexicographic order is
-*not* numeric order once a corpus has ten or more chunks (`texts_10.pkl` sorts
-before `texts_2.pkl`), which is precisely why this is replicated rather than
-assumed to be a no-op.
+with the scheduling -- which worker gets which chunk, and in what order they
+finish -- having no say in it at all. Note that lexicographic order is *not*
+numeric order once a corpus has ten or more chunks (`texts_10.pkl` sorts before
+`texts_2.pkl`), which is precisely why this is replicated rather than assumed to
+be a no-op.
 """
 
 import random
@@ -59,14 +82,12 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse import coo_matrix
 
-# The one import from live code: this only decides how the chunk list is cut
-# into batches, it is not part of the counting arithmetic, and the reference has
-# to agree with whatever the live driver does on *this* machine for the
-# summation order to line up.
-from hyperhyper.utils import _default_workers, read_pickle
+# The one import from live code, and it is not counting logic: `read_pickle` is
+# how a chunk file is read off disk.
+from hyperhyper.utils import read_pickle
 
 # --------------------------------------------------------------------------
-# frozen: hyperhyper/pair_counts.py @ 671c91b
+# frozen: hyperhyper/pair_counts.py @ f68cc74 + the merge-order change
 # --------------------------------------------------------------------------
 
 
@@ -167,7 +188,7 @@ VALID_MODES = frozenset({"deter", "prob", "off", "decay"})
 
 def _count_one_chunk(text_path, params):
     """
-    Mirrors `CountPairsClosure.__call__` @ 671c91b, including the per-file RNG
+    Mirrors `CountPairsClosure.__call__` @ f68cc74, including the per-file RNG
     derived from a stable string (so it does not depend on chunk *order*).
     """
     texts = read_pickle(text_path)
@@ -193,14 +214,12 @@ def _merge_order(texts_paths):
     """
     The order in which `count_pairs_parallel` adds the per-chunk matrices.
 
-    See the module docstring: batches of `_default_workers() * 2 + 1` chunks in
-    submission order, each batch internally sorted by path.
+    See the module docstring: one canonical order, sorted by path, independent
+    of the core count and of which worker finished when. Spelled out here rather
+    than imported so that a live `merge_order` that quietly stops being sorted
+    is caught instead of followed.
     """
-    batch = _default_workers() * 2 + 1
-    order = []
-    for start in range(0, len(texts_paths), batch):
-        order.extend(sorted(texts_paths[start : start + batch]))
-    return order
+    return sorted(texts_paths)
 
 
 def _count_pairs_serial(texts_paths, params):
@@ -226,7 +245,7 @@ def reference_count_pairs(
     min_count=0,
 ):
     """
-    Frozen copy of `count_pairs` @ 671c91b, with the process pool swapped for
+    Frozen copy of `count_pairs` @ f68cc74, with the process pool swapped for
     the equivalent serial accumulation.
     """
     for x in (dynamic_window, subsample):
