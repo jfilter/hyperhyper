@@ -23,12 +23,24 @@ def _default_workers():
 
 
 def save_arrays(f, a1, a2):
+    """
+    Save two numpy arrays to a single compressed ``.npz`` file at ``f``.
+
+    Used to persist the SVD outputs ``(ut, s)``. ``f`` may be a path-like
+    object; numpy appends the ``.npz`` extension. Read back with ``load_arrays``.
+    """
     if not isinstance(f, str):
         f = str(f)
     np.savez_compressed(f, a1=a1, a2=a2)
 
 
 def load_arrays(f):
+    """
+    Load the two arrays written by ``save_arrays`` from ``f``.
+
+    Accepts a path with or without the ``.npz`` extension (it is appended if
+    missing) and returns the arrays as a ``(a1, a2)`` tuple.
+    """
     if not isinstance(f, str):
         f = str(f)
     if not f.endswith(".npz"):
@@ -38,12 +50,26 @@ def load_arrays(f):
 
 
 def save_matrix(f, m):
+    """
+    Save a scipy sparse matrix ``m`` to a compressed ``.npz`` file at ``f``.
+
+    ``f`` may be a path-like object. Read back with ``load_matrix``.
+    """
     if not isinstance(f, str):
         f = str(f)
     save_npz(f, m, compressed=True)
 
 
 def load_matrix(f):
+    """
+    Load a scipy sparse matrix from ``f`` (as written by ``save_matrix``).
+
+    Accepts a path with or without the ``.npz`` extension (appended if missing).
+    First tries scipy's ``load_npz``; if that fails with ``ValueError`` (an
+    older file written in the legacy, hand-rolled CSR layout with separate
+    ``data``/``indices``/``indptr``/``shape`` arrays), it falls back to
+    reconstructing a ``csr_matrix`` from those arrays.
+    """
     if not isinstance(f, str):
         f = str(f)
     if not f.endswith(".npz"):
@@ -89,6 +115,12 @@ def map_pool(array, fun, total=None, desc=None, process_chunksize=100):
 
 
 def delete_folder(pth):
+    """
+    Recursively delete the directory ``pth`` and everything inside it.
+
+    ``pth`` is a ``pathlib.Path``. Walks the tree, unlinking files and
+    recursing into subdirectories, then removes the now-empty directory itself.
+    """
     for sub in pth.iterdir():
         if sub.is_dir():
             delete_folder(sub)
@@ -98,12 +130,20 @@ def delete_folder(pth):
 
 
 def to_pickle(ob, fn):
+    """
+    Pickle object ``ob`` to the file ``fn``, creating parent directories.
+
+    ``fn`` is a ``pathlib.Path``; any missing parent directories are created.
+    """
     fn.parent.mkdir(parents=True, exist_ok=True)
     with open(fn, "wb") as outfile:
         pickle.dump(ob, outfile)
 
 
 def read_pickle(fn):
+    """
+    Unpickle and return the object stored in the file ``fn``.
+    """
     with open(fn, "rb") as infile:
         return pickle.load(infile)
 

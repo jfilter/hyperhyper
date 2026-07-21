@@ -12,7 +12,29 @@ from scipy import sparse
 
 def calc_pmi(counts, cds):
     """
-    Calculates e^PMI; PMI without the log().
+    Compute ``e^PMI`` from a word-context co-occurrence matrix.
+
+    Returns the exponentiated pointwise mutual information
+
+        e^PMI(w, c) = P(w, c) / (P(w) * P(c))
+                    = count(w, c) * total / (count(w) * count(c))
+
+    i.e. PMI without the final ``log()`` -- the caller (``PPMIEmbedding``)
+    takes the log itself. Working in the exponentiated domain keeps the matrix
+    sparse: a zero co-occurrence stays a stored zero rather than becoming -inf.
+
+    ``cds`` is the context-distribution smoothing exponent (Levy & Goldberg
+    2015): context counts are raised to the power ``cds`` before normalization,
+    which flattens the context distribution and dampens the PMI of rare
+    contexts. ``cds=1`` recovers plain PMI; ``cds=0.75`` is the common default.
+
+    Args:
+        counts: sparse word-by-context co-occurrence count matrix.
+        cds (float): context-distribution smoothing exponent.
+
+    Returns:
+        Sparse matrix of ``e^PMI`` values, in the same container flavor
+        (``spmatrix`` vs. sparse array) as ``counts``.
     """
 
     sum_w = np.asarray(counts.sum(axis=1)).ravel()
@@ -49,10 +71,30 @@ def calc_pmi(counts, cds):
 
 class PPMIEmbedding:
     """
-    Base class for explicit representations. Assumes that the serialized input is e^PMI.
+    Explicit (sparse, high-dimensional) word representation over SPPMI values.
 
-    Positive PMI (PPMI) with negative sampling (neg).
-    Negative samples shift the PMI matrix before truncation.
+    Each row is a word vector whose entries are shifted positive pointwise
+    mutual information (SPPMI) with each context, following Levy & Goldberg
+    (2015). The input ``matrix`` is assumed to hold ``e^PMI`` values (as
+    produced by ``calc_pmi``); the constructor takes the ``log`` and applies
+    the negative-sampling shift and the positive clip:
+
+        SPPMI(w, c) = max(PMI(w, c) - log(neg), 0)
+
+    ``neg`` is the number of negative samples: shifting PMI down by ``log(neg)``
+    mimics word2vec's SGNS with ``neg`` negative samples and drives more entries
+    to the zero clip, making the matrix sparser. ``neg=1`` leaves PMI unshifted
+    (plain PPMI); ``neg=None`` also applies no shift. Regardless of ``neg``,
+    negative values are always clipped to zero, so the result is genuinely
+    *positive* PMI.
+
+    Args:
+        matrix: sparse ``e^PMI`` matrix (see ``calc_pmi``). Copied, not
+            mutated in place.
+        normalize (bool): if True, L2-normalize the rows so that similarity
+            reduces to a dot product / cosine similarity.
+        neg (int | None): negative-sampling shift; PMI is shifted by
+            ``-log(neg)`` before clipping.
     """
 
     def __init__(self, matrix, normalize=True, neg=1):
@@ -80,6 +122,12 @@ class PPMIEmbedding:
             self.normalize()
 
     def normalize(self):
+        """
+        L2-normalize each row (word vector) in place.
+
+        After this, every non-zero row has unit Euclidean norm, so dot products
+        between rows are cosine similarities. All-zero rows are left at zero.
+        """
         m2 = self.m.copy()
         m2.data **= 2
         sums = np.sqrt(np.asarray(m2.sum(axis=1)).ravel())
@@ -96,6 +144,10 @@ class PPMIEmbedding:
             self.m = sparse.csr_matrix(self.m)
 
     def represent(self, w_idx):
+        """
+        Return the SPPMI row vector for the word at index ``w_idx`` as a
+        1-by-vocabulary sparse row.
+        """
         return self.m[w_idx, :]
 
     def similarity(self, w1, w2):
@@ -119,6 +171,22 @@ class PPMIEmbedding:
 
     def most_similar_vectors(self, positives, negatives, topn=10):
         """
+        Analogy-style query: rank words by similarity to the mean of the
+        ``positives`` vectors minus the ``negatives`` vectors.
+
+        The (unit-normalized) mean of the selected word vectors is compared
+        against every row; useful for "king - man + woman" style queries.
+        Assumes the vectors have been normalized.
+
+        Args:
+            positives: word indices to add.
+            negatives: word indices to subtract.
+            topn (int): number of results to return.
+
+        Returns:
+            List of ``(index, score)`` tuples sorted by descending score --
+            the same order and shape as ``most_similar``.
+
         Some parts taken from gensim.
         https://github.com/RaRe-Technologies/gensim/blob/ea87470e4c065676d3d33df15b8db4192b30ebc1/gensim/models/keyedvectors.py#L690
         """

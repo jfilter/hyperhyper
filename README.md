@@ -16,7 +16,9 @@ This package implements these approaches (somewhat) efficiently.
 
 ## Installation
 
-Requires Python 3.10–3.13. (3.14 is not supported yet: `gensim` has no wheel for it.)
+Requires Python `>=3.10,<3.14`. Python 3.14 is deliberately excluded: no `gensim`
+wheel exists for it at any version, and its sdist does not compile against CPython
+3.14 (gensim's vendored Cython dereferences a struct field CPython 3.14 removed).
 
 ```bash
 pip install hyperhyper
@@ -41,12 +43,12 @@ python -m spacy download en_core_web_sm
 ```python
 import hyperhyper as hy
 
-# download and uncomproess the data
+# download and uncompress the data
 # wget http://www.statmt.org/wmt14/training-monolingual-news-crawl/news.2010.en.shuffled.gz && gzip -d news.2010.en.shuffled.gz
 corpus = hy.Corpus.from_file("news.2010.en.shuffled")
 bunch = hy.Bunch("news_bunch", corpus)
 
-# `hyperhyper` is built open `gensim`. So you can get word embeddings in a keyed vectors format.
+# `hyperhyper` is built on `gensim`. So you can get word embeddings in a keyed vectors format.
 # https://radimrehurek.com/gensim/models/keyedvectors.html
 vectors, results = bunch.svd(keyed_vectors=True)
 
@@ -61,7 +63,9 @@ vectors.most_similar("berlin")
  ("amsterdam", ...), ("stockholm", ...)]
 ```
 
-Check out the [examples](./examples).
+See the [usage guide](./docs/usage.md) for the full public API — `Corpus`
+constructors, `bunch.pmi(...)` / `bunch.svd(...)`, the evaluation result shape and
+`bunch.results(...)` — and check out the runnable [examples](./examples).
 
 The general concepts:
 
@@ -69,7 +73,7 @@ The general concepts:
 -   cache all results and also record their performance on test data
 -   make it easy to fine-tune parameters for your data
 
-More documentation may be forthcoming. Until then you have to read the [source code](./hyperhyper).
+For anything the usage guide does not cover, read the [source code](./hyperhyper).
 
 ## Performance Optimization
 
@@ -106,7 +110,7 @@ export MKL_NUM_THREADS=1
 ## Background
 
 `hyperhyper` is based on research by Omer Levy et al. from 2015 ([the paper](https://aclweb.org/anthology/papers/Q/Q15/Q15-1016/)).
-The authors published the code they used in their experiments as [Hyperwods](https://bitbucket.org/omerlevy/hyperwords).
+The authors published the code they used in their experiments as [Hyperwords](https://bitbucket.org/omerlevy/hyperwords).
 Initially, I [tried](https://github.com/jfilter/hyperwords) to port their original software to Python 3 but I ended up re-writing large parts of it.
 So this package was born.
 
@@ -120,7 +124,7 @@ The count-based word-embeddings by `hyperhyper` are deterministic.
 So multiple runs of experiments with identical parameters will yield the same results.
 (The randomized options — `dynamic_window="prob"`, `subsample="prob"` — are reproducible
 through the `seed` parameter.)
-Word2vec and others unstable.
+Word2vec and others are unstable.
 Due to randomness, their results will vary.
 
 `hyperhyper` is built upon the seminal Python NLP package [gensim](https://radimrehurek.com/gensim/).
@@ -144,24 +148,49 @@ This software is based on ideas stemming from the following papers:
 Install and use [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync --extra full
-uv run python -m spacy download en_core_web_sm
-uv run pytest
-uv run ruff check .
-uv run ruff format .
+# `--extra full` pulls in spaCy + scikit-learn; `--group dev` adds pytest and ruff
+uv sync --extra full --group dev
 ```
 
-`pytest -m "not slow"` skips the tests that need the spaCy model.
+Run the fast test suite (no spaCy model required):
+
+```bash
+uv run pytest -m "not slow"
+```
+
+The slow tests need the spaCy language model, so download it first:
+
+```bash
+uv run python -m spacy download en_core_web_sm
+uv run pytest -m slow          # or `uv run pytest` to run everything
+```
+
+Lint and format:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .   # drop `--check` to apply formatting
+```
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the equivalence gate that guards
+changes to the pair-counting code.
 
 ## Contributing
 
 If you have a **question**, found a **bug** or want to propose a new **feature**, have a look at the [issues page](https://github.com/jfilter/hyperhyper/issues).
 
 **Pull requests** are especially welcomed when they fix bugs or improve the code quality.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to set up the project, run the
+tests and respect the correctness gate around the counting code.
 
 ## Future Work / TODO
 
--   implement counting in a more efficient programming language, e.g. Cython.
+-   Speed up pair counting. The counting in `hyperhyper/pair_counts.py` is still
+    pure Python (`iterate_tokens`); the plan is to replace it with a vectorized
+    numpy implementation. A correctness gate is already in place for that rewrite:
+    `tests/test_pair_counts_equivalence.py` compares the live counter against a
+    frozen reference (`bench/reference.py`) and requires bit-identical output on
+    the deterministic configurations. See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## `hyperhyper`?
 
