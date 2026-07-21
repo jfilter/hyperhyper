@@ -5,50 +5,115 @@ Can't use the evaluation methods in gensim because the keyed vector structure do
 So we have to caculate the metrics ourselves.
 """
 
-from pathlib import Path
+import logging
+from importlib.resources import files
 
-import numpy as np
-from scipy.stats.stats import spearmanr
+from scipy.stats import spearmanr
 
 from . import evaluation_datasets
 
-try:
-    from importlib.resources import path
-except ImportError:
-    # backport for Python <3.7
-    from importlib_resources import path
+logger = logging.getLogger(__name__)
 
 
-def read_test_data(lang, type):
+def read_test_data(lang, kind):
     """
     read test data that is stored within the module
+
+    Returns `Traversable`s rather than filesystem paths: extracting the
+    directory to a temporary location (which is what `as_file` does for a
+    zipimported package) and returning the paths afterwards hands back names
+    that no longer exist by the time the caller reads them.
     """
-    with path(evaluation_datasets, lang) as eval_dir:
-        for file in eval_dir.glob(f"{type}/*.txt"):
-            yield file
+    directory = files(evaluation_datasets).joinpath(lang).joinpath(kind)
+    return sorted(
+        (p for p in directory.iterdir() if p.name.endswith(".txt")),
+        key=lambda p: p.name,
+    )
+
+
+def data_name(data):
+    """
+    the file name of a test dataset, without the `.txt` suffix
+    """
+    return data.name.removesuffix(".txt")
 
 
 def to_item(li):
     """
-    squeeze
+    Squeeze a preprocessed test-set entry down to the single token it stands for.
+
+    Returns `None` when there is no such token, which happens two ways:
+
+    * the preprocessing dropped the entry entirely (stop word, punctuation), or
+    * it produced *several* tokens -- multi-word entries such as `vice
+      president`, and every hyphenated form (`ice-cream` -> `['ice', 'cream']`).
+
+    The multi-token case used to return the first token. That silently scored a
+    different word than the dataset asked about: `ice-cream` was evaluated as
+    `ice`. Such a row cannot be answered, so it has to be dropped and counted
+    as out-of-vocabulary instead.
     """
     if isinstance(li, list):
-        if len(li) == 0:
+        if len(li) != 1:
             return None
-        if len(li) == 1:
-            return li[0]
         return to_item(li[0])
     return li
+
+
+def penalize_oov(score, oov):
+    """
+    Fold the out-of-vocabulary rate into a score.
+
+    Scaling by `1 - oov` only penalizes non-negative scores. Spearman is
+    genuinely negative for an embedding that is worse than chance, and there
+    scaling *rewards* missing data: -0.5 at oov=0.0 gives -0.500, but -0.5 at
+    oov=0.9 gives -0.050, i.e. an almost-perfect-looking score for an embedding
+    that got the sign wrong and could only answer a tenth of the questions.
+
+    Subtracting the magnitude instead applies the same downward penalty
+    whatever the sign, so more missing vocabulary always lowers the number.
+    For non-negative scores -- analogy accuracy and positive correlations,
+    which is every score anyone actually reports -- this is exactly the old
+    `score * (1 - oov)`. Only the negative branch changes, and it now ranges
+    down to -2 rather than being squeezed towards 0.
+    """
+    return score - abs(score) * oov
+
+
+def aggregate(line_counts, scores, full_results, kind):
+    """
+    Combine the per-dataset scores into a micro (line-weighted) and a macro
+    (dataset-weighted) average.
+
+    Every dataset can be skipped for lack of in-vocabulary rows -- the normal
+    case for the small, domain-specific corpora this package targets. Averaging
+    nothing used to raise `ZeroDivisionError` from inside the evaluation, so
+    report `nan` and say why instead.
+    """
+    if len(full_results) == 0:
+        logger.warning(
+            "no %s dataset had any in-vocabulary row; the vocabulary and the "
+            "test data do not overlap, so there is nothing to average",
+            kind,
+        )
+        return {"micro": float("nan"), "macro": float("nan"), "results": []}
+
+    micro_avg = sum(x * y for x, y in zip(line_counts, scores, strict=True)) / sum(
+        line_counts
+    )
+    macro_avg = sum(scores) / len(scores)
+    return {"micro": micro_avg, "macro": macro_avg, "results": full_results}
 
 
 def setup_test_tokens(p, keep_len):
     """
     Read in traning data from files and discard comments (etc.)
     """
-    lines = Path(p).read_text().split("\n")
-    lines = [l.split() for l in lines]
-    lines = [l for l in lines if len(l) == keep_len]
-    return zip(*lines)
+    lines = p.read_text(encoding="utf-8").split("\n")
+    lines = [line.split() for line in lines]
+    lines = [line for line in lines if len(line) == keep_len]
+    # every line has exactly `keep_len` fields after the filter above
+    return zip(*lines, strict=True)
 
 
 def eval_similarity(vectors, token2id, preproc_fun, lang="en"):
@@ -61,47 +126,46 @@ def eval_similarity(vectors, token2id, preproc_fun, lang="en"):
         results = []
 
         token1, token2, sims = setup_test_tokens(data, 3)
+        # The gold column is text on disk and has to be cast before it reaches
+        # `spearmanr`, which column-stacks its two arguments: a float array
+        # stacked with a string array promotes *everything* to strings, so both
+        # columns end up ranked lexicographically ("10" < "2.5" < "9") and even
+        # a perfect embedding scores well below 1.0.
+        sims = [float(s) for s in sims]
         # preprocess tokens 'in batch'
         token1, token2 = preproc_fun(token1), preproc_fun(token2)
-        lines = list(zip(token1, token2, sims))
+        # strict=False: preproc_fun is not guaranteed to be length-preserving
+        # (texts_to_sents emits one entry per sentence, not per input text)
+        lines = list(zip(token1, token2, sims, strict=False))
         for x, y, sim in lines:
             x, y = to_item(x), to_item(y)
-
-            # not sure it the lines below are needed
-            # if x is None or y is None:
-            #     continue
 
             # skip over OOV
             if x in token2id and y in token2id:
                 results.append((vectors.similarity(token2id[x], token2id[y]), sim))
 
         if len(results) == 0:
-            print("not enough results for this dataset: ", data.name)
+            logger.warning("not enough results for this dataset: %s", data.name)
             continue
 
-        actual, expected = zip(*results)
-        spear_res = spearmanr(actual, expected)[0]
+        actual, expected = zip(*results, strict=True)
+        spear_res = spearmanr(actual, expected).statistic
         spear_results.append(spear_res)
         line_counts.append(len(results))
         oov = (len(lines) - len(results)) / len(lines)
 
         full_results.append(
             {
-                "name": f"{lang}_{data.stem}",
+                "name": f"{lang}_{data_name(data)}",
                 "score": spear_res,
                 "oov": oov,
-                "fullscore": spear_res * (1 - oov),  # consider the portion of OOV
+                # consider the portion of OOV
+                "fullscore": penalize_oov(spear_res, oov),
             }
         )
 
-    micro_avg = sum([x * y for x, y in zip(line_counts, spear_results)]) / sum(
-        line_counts
-    )
-    macro_avg = sum(spear_results) / len(spear_results)
-    return {"micro": micro_avg, "macro": macro_avg, "results": full_results}
+    return aggregate(line_counts, spear_results, full_results, "word similarity")
 
-
-# TODO:
 
 # analogies
 def eval_analogies(vectors, token2id, preproc_fun, lang="en"):
@@ -112,39 +176,54 @@ def eval_analogies(vectors, token2id, preproc_fun, lang="en"):
 
         line_tokens = setup_test_tokens(data, 4)
         line_tokens = [preproc_fun(t) for t in line_tokens]
-        lines = list(zip(*line_tokens))
+        # strict=False: see the note in eval_similarity
+        lines = list(zip(*line_tokens, strict=False))
         for tokens in lines:
             tokens = [to_item(x) for x in tokens]
             # skip over OOV
-            if not all([x in token2id for x in tokens]):
+            if not all(x in token2id for x in tokens):
                 continue
 
             tokens = [token2id[x] for x in tokens]
+            # the dataset columns are `a a_ b b_`, i.e. the relation a -> a_ is
+            # mirrored by b -> b_. 3CosAdd thus asks for a_ - a + b.
             a, a_, b, b_ = tokens
-            guesses = vectors.most_similar_vectors([a, b], [a_])
-            result = 1 if b_ in guesses else 0
+            exclusions = {a, a_, b}
+            # A guess only counts if it is outside `exclusions`, so a row whose
+            # expected answer is itself one of the question words can never
+            # score 1. Scoring it 0 puts an unanswerable row in the accuracy
+            # denominator and caps the reported number invisibly -- under the
+            # default lemmatizing preprocessing `write writes work works`
+            # collapses to `write write work work`, which is 31% of
+            # en/analogy/google.txt and 80% of en/analogy/msr.txt. Drop the row
+            # so it lands in the honest `oov` bucket instead.
+            if b_ in exclusions:
+                continue
+            guesses = vectors.most_similar_vectors(
+                [a_, b], [a], topn=len(exclusions) + 1
+            )
+            guesses = [int(idx) for idx, _ in guesses if int(idx) not in exclusions]
+            result = 1 if guesses and guesses[0] == b_ else 0
             results.append(result)
 
         if len(results) == 0:
-            print("not enough results for this dataset: ", data.name)
+            logger.warning("not enough results for this dataset: %s", data.name)
             continue
 
-        sum_results = sum(results)
+        accuracy = sum(results) / len(results)
         line_counts.append(len(results))
         oov = (len(lines) - len(results)) / len(lines)
 
         full_results.append(
             {
-                "name": f"{lang}_{data.stem}",
-                "score": sum_results,
+                "name": f"{lang}_{data_name(data)}",
+                "score": accuracy,
                 "oov": oov,
-                "fullscore": sum_results * (1 - oov),  # consider the portion of OOV
+                # consider the portion of OOV; accuracy is never negative, so
+                # this matches the old `accuracy * (1 - oov)` exactly
+                "fullscore": penalize_oov(accuracy, oov),
             }
         )
 
-    scores = [x['score'] for x in full_results]
-    micro_avg = sum([x * y for x, y in zip(line_counts, scores)]) / sum(
-        line_counts
-    )
-    macro_avg = sum(scores) / len(scores)
-    return {"micro": micro_avg, "macro": macro_avg, "results": full_results}
+    scores = [x["score"] for x in full_results]
+    return aggregate(line_counts, scores, full_results, "analogy")

@@ -1,59 +1,104 @@
-import tempfile
-from pathlib import Path
-
 import pytest
 
 import hyperhyper
-
-some_text1 = """
-The English Wikipedia is the English-language edition of the free online encyclopedia Wikipedia. Founded on 15 January 2001, it is the first edition of Wikipedia and, as of April 2019, has the most articles of any of the editions.[2] As of June 2019, 12% of articles in all Wikipedias belong to the English-language edition. This share has gradually declined from more than 50 percent in 2003, due to the growth of Wikipedias in other languages.[3] As of 1 June 2019, there are 5,870,200 articles on the site,[4] having surpassed the 5 million mark on 1 November 2015.[5] In October 2015, the combined text of the English Wikipedia's articles totalled 11.5 gigabytes when compressed.[6]
-
-The Simple English Wikipedia is a variation in which most of the articles use only basic English vocabulary. There is also the Old English (Ænglisc/Anglo-Saxon) Wikipedia (angwiki). Community-produced news publications include The Signpost.[7]
-"""
-
-some_text2 = """
-The English Wikipedia was the first Wikipedia edition and has remained the largest. It has pioneered many ideas as conventions, policies or features which were later adopted by Wikipedia editions in some of the other languages. These ideas include "featured articles",[8] the neutral-point-of-view policy,[9] navigation templates,[10] the sorting of short "stub" articles into sub-categories,[11] dispute resolution mechanisms such as mediation and arbitration,[12] and weekly collaborations.[13]
-
-The English Wikipedia has adopted features from Wikipedias in other languages. These features include verified revisions from the German Wikipedia (dewiki) and town population-lookup templates from the Dutch Wikipedia (nlwiki).
-
-Although the English Wikipedia stores images and audio files, as well as text files, many of the images have been moved to Wikimedia Commons with the same name, as passed-through files. However, the English Wikipedia also has fair-use images and audio/video files (with copyright restrictions), most of which are not allowed on Commons.
-
-Many of the most active participants in the Wikimedia Foundation, and the developers of the MediaWiki software that powers Wikipedia, are English users.
-"""
-
-texts = [some_text1, some_text2] * 10
+from hyperhyper.preprocessing import texts_to_sents, tokenize_texts
 
 
-def test_corpus():
+def test_corpus(sample_texts):
     sents = []
-    for t in texts:
+    for t in sample_texts:
         sents += t.split("\n\n")
-    corpus = hyperhyper.Corpus.from_sents(sents)
+    corpus = hyperhyper.Corpus.from_sents(sents, preproc_func=tokenize_texts)
     assert corpus.size == len(sents)
     assert corpus.counts[corpus.vocab.token2id["wikipedia"]] > 0
     assert corpus.vocab.token2id["wikipedia"] == corpus.vocab.tokens.index("wikipedia")
 
     keys = corpus.vocab.token2id.keys()
-    print(len(keys))
+    assert len(keys) > 0
 
     for k in keys:
         i = corpus.vocab.token2id[k]
         assert i < len(keys)
 
 
-def test_sent_split():
-    corpus = hyperhyper.Corpus.from_texts(texts)
-    print(corpus.texts)
+def test_texts(sample_texts):
+    corpus = hyperhyper.Corpus.from_texts(sample_texts, preproc_func=tokenize_texts)
+    assert corpus.size == len(sample_texts)
+    assert "wikipedia" in corpus.vocab.token2id
+
+
+def test_text_files(text_files):
+    corpus = hyperhyper.Corpus.from_text_files(text_files, preproc_func=tokenize_texts)
+    assert corpus.size > 2
+    assert "wikipedia" in corpus.vocab.token2id
+
+
+def test_text_files_view_fraction(text_files):
+    corpus = hyperhyper.Corpus.from_text_files(
+        text_files, preproc_func=tokenize_texts, view_fraction=0.2
+    )
     assert corpus.size > 2
 
 
-def test_text_files():
-    # setup
-    test_dir = tempfile.mkdtemp()
-    for i, t in enumerate(texts):
-        Path(test_dir + f"/{i}.txt").write_text(t)
-    # test
-    corpus = hyperhyper.Corpus.from_text_files(test_dir)
-    corpus = hyperhyper.Corpus.from_text_files(test_dir, view_fraction=0.2)
-    print(corpus)
+def test_text_files_vocab_is_deterministic(tmp_path):
+    """
+    Regression test: the vocabulary must not depend on worker completion order.
+
+    Every rare word here has a document frequency of exactly 1, and `keep_n`
+    cuts the vocabulary in the middle of that tie. `filter_extremes` breaks
+    df-ties by insertion order, so merging the per-file vocabularies as the
+    futures completed kept a *different set of words* on each run.
+    """
+    directory = tmp_path / "tied"
+    directory.mkdir()
+    common = "alpha beta gamma delta epsilon"
+    for i in range(10):
+        # avoid digits: the preprocessing maps them all to "0"
+        rare = " ".join(f"rare{chr(97 + i)}{chr(97 + j)}" for j in range(20))
+        (directory / f"f{chr(97 + i)}.txt").write_text(
+            f"{common} {rare}\n", encoding="utf-8"
+        )
+
+    def vocab_of():
+        corpus = hyperhyper.Corpus.from_text_files(
+            directory, preproc_func=tokenize_texts, keep_n=60
+        )
+        return sorted(corpus.vocab.token2id)
+
+    first = vocab_of()
+    assert len(first) == 60
+    for _ in range(2):
+        assert vocab_of() == first
+
+
+@pytest.mark.slow
+def test_sent_split_spacy(spacy_model, sample_texts):
+    """
+    The default preprocessing splits the texts into sentences with spaCy, so
+    the corpus ends up holding more entries than there are texts.
+    """
+    corpus = hyperhyper.Corpus.from_texts(sample_texts, preproc_func=texts_to_sents)
+    assert corpus.size > len(sample_texts)
+    assert "wikipedia" in corpus.vocab.token2id
+
+
+@pytest.mark.slow
+def test_text_files_spacy(spacy_model, text_files):
+    corpus = hyperhyper.Corpus.from_text_files(text_files, preproc_func=texts_to_sents)
     assert corpus.size > 2
+    assert "wikipedia" in corpus.vocab.token2id
+
+
+def test_one_corpus_feeds_two_bunches(corpus, tmp_path):
+    """
+    `texts_to_file` used to overwrite `corpus.texts` with the paths it had just
+    written, so a second bunch pickled those paths as if they were token lists
+    and the workers died on `'PosixPath' object is not iterable`.
+    """
+    first = hyperhyper.Bunch(tmp_path / "first", corpus)
+    second = hyperhyper.Bunch(tmp_path / "second", corpus)
+
+    assert first.pair_counts(window=2).nnz > 0
+    assert second.pair_counts(window=2).nnz > 0
+    # each bunch keeps its own chunks, and both describe the same corpus
+    assert first.pair_counts(window=2).nnz == second.pair_counts(window=2).nnz

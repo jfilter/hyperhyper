@@ -3,7 +3,6 @@ represent a collection of texts
 """
 
 import logging
-import os
 import random
 from array import array
 from collections import defaultdict
@@ -14,9 +13,8 @@ from gensim.corpora import Dictionary
 from gensim.utils import SaveLoad
 from tqdm import tqdm
 
-from .preprocessing import (texts_to_sents, tokenize_texts,
-                            tokenize_texts_parallel)
-from .utils import chunks, dsum, read_pickle, to_pickle
+from .preprocessing import texts_to_sents, tokenize_texts_parallel
+from .utils import _default_workers, chunks, dsum, read_pickle, to_pickle
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +26,7 @@ class Vocab(Dictionary):
 
     def __init__(self, texts=None, **kwargs):
         super().__init__(texts)
-        if not texts is None:
+        if texts is not None:
             self.filter(**kwargs)
 
     def filter(self, no_below=0, no_above=1, keep_n=50000, keep_tokens=None):
@@ -51,7 +49,7 @@ class Vocab(Dictionary):
         return [tup[0] for tup in sorted(self.token2id.items(), key=lambda x: x[1])]
 
 
-class TransformToIndicesClosure(object):
+class TransformToIndicesClosure:
     """
     A closure that is pickable, usefull for multiprocessing.
     <UNK> is the last ID (thus vocab_size)
@@ -96,12 +94,12 @@ def texts_to_ids(input_text_fns, to_indices):
     """
     total_len = 0
     all_counts = []
-    with futures.ProcessPoolExecutor() as executor:
+    with futures.ProcessPoolExecutor(_default_workers()) as executor:
         # A dictionary which will contain a list the future info in the key, and the filename in the value
         jobs = {}
         files_left = len(input_text_fns)
         files_iter = iter(input_text_fns)
-        MAX_JOBS_IN_QUEUE = os.cpu_count() * 2
+        MAX_JOBS_IN_QUEUE = _default_workers() * 2
 
         with tqdm(total=len(input_text_fns), desc="texts to ids") as pbar:
             while files_left:
@@ -124,7 +122,11 @@ def texts_to_ids(input_text_fns, to_indices):
 
 
 def _build_vocab_from_file(args):
-    f, preproc_func, view_fraction = args[0], args[1], args[2]
+    f, preproc_func, view_fraction, seed = args[0], args[1], args[2], args[3]
+
+    # a per-file RNG, seeded with a stable string, so the sampling below is
+    # reproducible no matter which worker process picks up which file
+    rng = random.Random(f"{seed}-{Path(f).name}")
 
     texts = f.read_text().split("\n")
     texts = preproc_func(texts)
@@ -133,7 +135,7 @@ def _build_vocab_from_file(args):
     to_pickle(texts, f.with_suffix(".pkl"))
 
     # skip at random
-    if 0.999 > view_fraction < random.random():
+    if 0.999 > view_fraction < rng.random():
         return Vocab()
     return Vocab(texts)
 
@@ -163,31 +165,60 @@ class Corpus(SaveLoad):
             self.counts = count_tokens(transformed)
             self.size = len(transformed)
 
-    def texts_to_file(self, dir, text_chunk_size):
+    def texts_are_on_disk(self):
+        """
+        Whether `self.texts` holds paths to pickled chunks rather than the
+        token lists themselves.
+        """
+        return bool(self.texts) and all(isinstance(t, Path) for t in self.texts)
+
+    def texts_to_file(self, directory, text_chunk_size):
         """
         If we haven't created the temporay text files yet, do it here.
         We could't do it earlier since we only have location on the filesystem
         through the `bunch`.
+
+        Safe to call repeatedly: one corpus may be handed to several `Bunch`es,
+        and each keeps its texts in its own directory. Once the texts are on
+        disk `self.texts` holds paths, so a later call reads them back instead
+        of pickling the paths themselves.
         """
+        directory = Path(directory)
         if self.texts is None:
-            # re-use the texts that were created for initialization of the corpus
-            # TODO: make use of chunk size?
-            self.texts = self.input_text_fns
+            # Re-use the per-input-file pickles written during vocab building,
+            # one chunk per input file. `text_chunk_size` is deliberately NOT
+            # applied here: re-splitting would change the chunk filenames, and
+            # the pair-count RNG is seeded per file (`random.Random(f"{seed}-
+            # {name}")`), so `subsample="prob"` results would shift; the moved
+            # chunk boundaries would also change the float32 merge for the
+            # deterministic modes. The file-based path's granularity is the
+            # user's input-file granularity by design. Split the input up front
+            # to give the pool more chunks.
             fns = []
-            Path(dir).mkdir(parents=True, exist_ok=True)
+            directory.mkdir(parents=True, exist_ok=True)
             for i, f in enumerate(self.input_text_fns):
-                new_path = Path(f"{dir}/texts_{i}.pkl").resolve()
+                new_path = (directory / f"texts_{i}.pkl").resolve()
                 # only works if data and bunch are on same file system
                 f.rename(new_path)
                 fns.append(new_path)
             self.texts = fns
+            return
+
+        if self.texts_are_on_disk():
+            if {t.parent for t in self.texts} == {directory.resolve()}:
+                # already written to this very directory
+                return
+            # a second bunch: recover the token lists from the first one's chunks
+            texts = [t for fn in self.texts for t in read_pickle(fn)]
         else:
-            fns = []
-            for i, c in enumerate(chunks(self.texts, text_chunk_size)):
-                fn = Path(f"{dir}/texts_{i}.pkl").resolve()
-                to_pickle(c, fn)
-                fns.append(fn)
-            self.texts = fns
+            texts = self.texts
+
+        fns = []
+        for i, c in enumerate(chunks(texts, text_chunk_size)):
+            fn = (directory / f"texts_{i}.pkl").resolve()
+            to_pickle(c, fn)
+            fns.append(fn)
+        self.texts = fns
 
     @staticmethod
     def from_file(input_path, limit=None, **kwargs):
@@ -224,7 +255,12 @@ class Corpus(SaveLoad):
 
     @staticmethod
     def from_text_files(
-        base_dir, preproc_func=texts_to_sents, view_fraction=1, lang="en", **kwargs
+        base_dir,
+        preproc_func=texts_to_sents,
+        view_fraction=1,
+        lang="en",
+        seed=1312,
+        **kwargs,
     ):
         """
         Construct a corpus from a folder of text files.
@@ -236,26 +272,30 @@ class Corpus(SaveLoad):
             preproc_func (fun): The funcation to preprocess texts into sentences.
             view_fraction (float): Option to only look at portions of the text to determine the most frequent words.
             lang (str): The language of the texts, defaults to "en".
+            seed (int): Seed for the random sampling of `view_fraction`.
 
         Returns:
             Corpus
         """
         voc = Vocab()
-        input_text_fns = list(Path(base_dir).glob("*.txt"))
+        # sorted: `glob` yields in filesystem order, which differs between
+        # machines and would make the vocabulary depend on it
+        input_text_fns = sorted(Path(base_dir).glob("*.txt"))
         proc_fns = [f.with_suffix(".pkl") for f in input_text_fns]
+        built = {}
 
-        with futures.ProcessPoolExecutor() as executor:
+        with futures.ProcessPoolExecutor(_default_workers()) as executor:
             jobs = {}
             files_left = len(input_text_fns)
             files_iter = iter(input_text_fns)
-            MAX_JOBS_IN_QUEUE = os.cpu_count() * 2
+            MAX_JOBS_IN_QUEUE = _default_workers() * 2
 
             with tqdm(total=len(input_text_fns), desc="build up vocab") as pbar:
                 while files_left:
                     for this_file in files_iter:
                         job = executor.submit(
                             _build_vocab_from_file,
-                            [this_file, preproc_func, view_fraction],
+                            [this_file, preproc_func, view_fraction, seed],
                         )
                         jobs[job] = this_file
                         if len(jobs) > MAX_JOBS_IN_QUEUE:
@@ -264,12 +304,19 @@ class Corpus(SaveLoad):
                     for job in futures.as_completed(jobs):
                         files_left -= 1
                         pbar.update(1)
-                        # merge into one vocab
-                        voc.merge_with(job.result())
+                        # buffer instead of merging here: `as_completed` yields
+                        # in worker-completion order, and `filter_extremes`
+                        # breaks document-frequency ties by insertion order, so
+                        # merging as results arrive keeps a *different set of
+                        # tokens* on every run
+                        built[jobs[job]] = job.result()
                         del jobs[job]
+
+        # merge into one vocab in a deterministic order
+        for f in sorted(built):
+            voc.merge_with(built[f])
 
         # only consider most frequent terms etc.
         voc.filter(**kwargs)
 
         return Corpus(voc, preproc_func, input_text_fns=proc_fns, lang=lang)
-

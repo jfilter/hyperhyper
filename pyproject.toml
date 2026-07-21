@@ -1,41 +1,88 @@
-[tool.poetry]
-authors = ["Johannes Filter <hi@jfilter.de>"]
-classifiers = [
-  "Programming Language :: Python :: 3.6",
-  "Programming Language :: Python :: 3.7",
-  "Programming Language :: Python :: 3.8",
-  "License :: OSI Approved :: BSD License",
-  "Topic :: Scientific/Engineering :: Information Analysis",
-  "Topic :: Scientific/Engineering :: Artificial Intelligence",
-]
-description = "Python package to construct word embeddings for small data"
-keywords = ["natural-language-processing", "word-embeddings", "ppmi", "pmi", "pmi-svd"]
-license = "BSD-2-Clause"
-name = "hyperhyper"
-readme = "README.md"
-repository = "https://github.com/jfilter/hyperhyper"
-version = "0.1.1"
-
-[tool.poetry.dependencies]
-dataset = "1.*"
-gensim = "3.*"
-importlib_resources = {version = "*", python = "<= 3.6"}
-python = ">= 3.6"
-tqdm = "*"
-
-scikit-learn = {version = "*", optional = true}
-spacy = {version = "2.*", optional = true}
-
-[tool.poetry.dev-dependencies]
-black = "*"
-pylint = "*"
-pytest = "^5.2"
-scikit-learn = "*"
-spacy = "*"
-
-[tool.poetry.extras]
-full = ["scikit-learn", "spacy"]
-
 [build-system]
-build-backend = "poetry.core.masonry.api"
-requires = ["poetry-core>=1.0.0"]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hyperhyper"
+version = "0.1.1"
+description = "Python package to construct word embeddings for small data"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = "BSD-2-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "Johannes Filter", email = "hi@jfilter.de" }]
+keywords = ["natural-language-processing", "word-embeddings", "ppmi", "pmi", "pmi-svd"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = [
+  # 2.0 is the floor, not 1.6: dataset 1.x predates SQLAlchemy 2 and dies with
+  # `add_column() takes 3 positional arguments but 4 were given`. Found by the
+  # `floor` CI job, which resolved 1.6.0 on 3.10 while 3.13 already got 2.0.0.
+  "dataset>=2,<3",
+  "gensim>=4.4,<5",
+  "numpy>=1.26",
+  # 1.12 is the floor, not 1.11: sparse.diags_array (used by calc_pmi and the
+  # subsampling scaling) was added in 1.12. Enforced by the `floor` CI job.
+  "scipy>=1.12",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# click is not ours: spacy 3.8's cli/_util.py does `from click import NoSuchOption`
+# without declaring click, and typer >=0.13 no longer pulls it in -- so `import spacy`
+# fails outright without this. Capped at <9 because that undeclared import is not
+# covered by any compatibility promise (click 8.4 already warns about 9.1 removals).
+full = ["scikit-learn>=1.4", "spacy>=3.7,<4", "click>=8.1,<9"]
+
+[project.urls]
+Homepage = "https://github.com/jfilter/hyperhyper"
+Repository = "https://github.com/jfilter/hyperhyper"
+Issues = "https://github.com/jfilter/hyperhyper/issues"
+
+[dependency-groups]
+# pytest floored at 9.0.3 for GHSA-6w46-j5rx-g56g (tmpdir handling); dev-only.
+dev = [
+  "pytest>=9.0.3",
+  "ruff>=0.9",
+  "scikit-learn>=1.4",
+  "spacy>=3.7,<4",
+  "click>=8.1,<9",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["hyperhyper"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/hyperhyper", "/tests", "/README.md", "/LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = ["slow: requires the spaCy model / network"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "A", "T20", "G", "LOG", "ERA", "RUF"]
+extend-select = ["E714", "E722", "S101"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "T20"]
+# the benchmark's whole output is a printed table; `reference.py` is a frozen
+# snapshot of pair_counts.py and is deliberately kept verbatim
+"bench/**" = ["T20"]
+
+[tool.ruff.format]
+docstring-code-format = true
