@@ -6,20 +6,17 @@ import heapq
 import logging
 
 import numpy as np
+from gensim import matutils
 from gensim.models.lsimodel import stochastic_svd
-from scipy.sparse import linalg
+from scipy.sparse.linalg import svds
 
 logger = logging.getLogger(__name__)
 
 
 try:
-    from sparsesvd import sparsesvd
-except ImportError:
-    logger.info("no sparsvd")
-
-try:
     from sklearn.utils.extmath import randomized_svd
 except ImportError:
+    randomized_svd = None
     logger.info("no sklearn")
 
 
@@ -28,7 +25,6 @@ def calc_svd(matrix, dim, impl, impl_args):
     apply truncated SVD with several implementations
 
     truncated SVD:
-    sparsesvd: https://pypi.org/project/sparsesvd/
     scipy: https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.svd.html
 
     randomized truncated SVD:
@@ -37,20 +33,28 @@ def calc_svd(matrix, dim, impl, impl_args):
 
     Check out the comparision: https://github.com/jfilter/sparse-svd-benchmark
     """
-    if impl == "sparsesvd":
-        # originally used SVD implementation
-        ut, s, _ = sparsesvd(matrix.m.tocsc(), dim)
-        # returns in a different format
-        ut = ut.T
     if impl == "scipy":
-        ut, s, _ = linalg.svds(matrix.m, dim)
+        ut, s, _ = svds(matrix.m, k=dim, **impl_args)
+        # `svds` returns the singular values ascending, `gensim`/`scikit` return
+        # them descending. SVDEmbedding is insensitive to the order (it scales
+        # columns and normalizes rows), but anything slicing `ut[:, :k]`, reading
+        # `s[0]` as the leading component or plotting the spectrum is not -- and
+        # `bunch.svd_matrix` persists these arrays to disk.
+        order = np.argsort(s)[::-1]
+        ut, s = ut[:, order], s[order]
     # randomized (but fast) truncated SVD
-    if impl == "gensim":
+    elif impl == "gensim":
         # better default arguments
         args = {"power_iters": 5, "extra_dims": 10, **impl_args}
         ut, s = stochastic_svd(matrix.m, dim, matrix.m.shape[0], **args)
-    if impl == "scikit":
+    elif impl == "scikit":
+        if randomized_svd is None:
+            raise ImportError(
+                "impl='scikit' requires scikit-learn: pip install 'hyperhyper[full]'"
+            )
         ut, s, _ = randomized_svd(matrix.m, dim, **impl_args)
+    else:
+        raise ValueError(f"unknown SVD impl: {impl!r}")
 
     return ut, s
 
@@ -69,15 +73,14 @@ class SVDEmbedding:
         else:
             self.m = np.power(s, eig) * ut
 
-        # not used?
-        # self.dim = self.m.shape[1]
-
         if normalize:
             self.normalize()
 
     def normalize(self):
-        norm = np.sqrt(np.sum(self.m * self.m, axis=1))
-        self.m = self.m / norm[:, np.newaxis]
+        norm = np.sqrt(np.sum(self.m * self.m, axis=1))[:, np.newaxis]
+        # keep all-zero rows at zero instead of turning them into nan (which
+        # would propagate into every later similarity computation)
+        self.m = np.divide(self.m, norm, out=np.zeros_like(self.m), where=norm > 0)
 
     def represent(self, w_idx):
         return self.m[w_idx, :]
@@ -91,6 +94,23 @@ class SVDEmbedding:
     def most_similar(self, w_idx, n=10):
         """
         Assumes the vectors have been normalized.
+
+        Returns a list of `(index, score)`, sorted by descending score -- the
+        same order as `most_similar_vectors`.
         """
         scores = self.m.dot(self.represent(w_idx))
-        return heapq.nlargest(n, zip(scores, list(range(len(scores)))))
+        # rank on the score, but hand back (index, score)
+        best = heapq.nlargest(n, zip(scores, range(len(scores)), strict=True))
+        return [(int(idx), float(score)) for score, idx in best]
+
+    def most_similar_vectors(self, positives, negatives, topn=10):
+        """
+        Assumes the vectors have been normalized.
+        """
+        mean = [self.represent(x) for x in positives] + [
+            -1 * self.represent(x) for x in negatives
+        ]
+        mean = matutils.unitvec(np.array(mean).mean(axis=0)).astype(np.float32)
+        dists = self.m.dot(mean)
+        best = matutils.argsort(dists, topn=topn, reverse=True)
+        return [(best_idx, float(dists[best_idx])) for best_idx in best]

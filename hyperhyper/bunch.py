@@ -4,21 +4,71 @@ the funtionality to the user. The `bunch` is the location where all the
 resulting files are stored.
 """
 
+import hashlib
+import inspect
+import json
 import logging
+import re
+from collections.abc import Mapping
 from pathlib import Path
 from timeit import default_timer as timer
 
 import dataset
 import numpy as np
-from gensim.models.keyedvectors import WordEmbeddingsKeyedVectors
+from gensim.models.keyedvectors import KeyedVectors
 
 from . import evaluation, pair_counts, pmi, svd
 from .corpus import Corpus
 from .experiment import record, results_from_db
-from .utils import (delete_folder, load_arrays, load_matrix, save_arrays,
-                    save_matrix)
+from .utils import delete_folder, load_arrays, load_matrix, save_arrays, save_matrix
 
 logger = logging.getLogger(__name__)
+
+VALID_IMPLS = frozenset({"scipy", "gensim", "scikit"})
+
+# Bumped whenever the meaning of a cache file changes -- a different default in
+# `count_pairs`, a different matrix layout, a different key scheme. Old entries
+# then simply stop being found instead of being served under a name whose
+# meaning has silently moved.
+CACHE_FORMAT = "v2"
+
+# what may appear verbatim in the human-readable part of a cache file name
+_UNSAFE_IN_NAME = re.compile(r"[^0-9A-Za-z.=+-]+")
+
+# keep file names comfortably below any file system limit
+_READABLE_PREFIX_MAX = 60
+
+
+def _canonical(value):
+    """
+    Normalise a parameter value so that equivalent values serialise identically.
+
+    Integral floats become ints (`dim=500.0` and `dim=500` are the same run),
+    and the same is done inside nested containers.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, Mapping):
+        return {str(k): _canonical(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_canonical(v) for v in value]
+    return value
+
+
+def _readable_prefix(params):
+    """
+    A short, lossy, human-readable hint so a cache directory can be eyeballed.
+
+    Purely decorative: only the digest that follows it identifies the entry.
+    """
+    parts = [
+        _UNSAFE_IN_NAME.sub("-", f"{k}={v}")
+        for k, v in sorted(params.items())
+        if not isinstance(v, Mapping | list | tuple)
+    ]
+    return "_".join(parts)[:_READABLE_PREFIX_MAX].strip("_")
 
 
 class Bunch:
@@ -28,89 +78,147 @@ class Bunch:
         self.db = None
         self.path = Path(path)
 
+        # Deleting has to be guarded by "is there a replacement?". Wiping first
+        # and only then discovering that there is no corpus to put back loses
+        # every cached matrix *and* the results database of an existing bunch.
+        if corpus is None:
+            if force_overwrite:
+                raise ValueError(
+                    "`force_overwrite=True` needs a `corpus` to replace the old one. "
+                    "Reopening an existing bunch without a corpus would delete it."
+                )
+            self.corpus = Corpus.load(str(self.path / "corpus.pkl"))
+            return
+
+        if not force_overwrite and Path(self.path / "corpus.pkl").is_file():
+            raise ValueError(
+                "There is already another corpus file saved. Set `force_overwrite` to True if you want to override it."
+            )
+
         if force_overwrite and self.path.exists():
             delete_folder(self.path)
 
-        if not corpus is None and not force_overwrite:
-            if Path(self.path / "corpus.pkl").is_file():
-                raise ValueError(
-                    "There is already another corpus file saved. Set `force_overwrite` to True if you want to override it."
-                )
-
-        if corpus is None:
-            self.corpus = Corpus.load(str(self.path / "corpus.pkl"))
-        else:
-            self.path.mkdir(parents=True, exist_ok=True)
-            self.corpus = corpus
-            self.corpus.texts_to_file(self.path / "texts", text_chunk_size)
-            self.corpus.save(str(self.path / "corpus.pkl"))
+        self.path.mkdir(parents=True, exist_ok=True)
+        self.corpus = corpus
+        self.corpus.texts_to_file(self.path / "texts", text_chunk_size)
+        self.corpus.save(str(self.path / "corpus.pkl"))
 
     def get_db(self):
         """
         Connecting to a SQLite database.
         """
         if self.db is None:
-            self.db = dataset.connect(f"sqlite:///{self.path}/results.db")
+            self.db = dataset.connect(
+                f"sqlite:///{self.path}/results.db",
+                engine_kwargs={"connect_args": {"timeout": 30}},
+            )
         return self.db
 
-    def dict_to_path(self, folder, dict):
+    def close(self):
+        """
+        Dispose of the SQLite connection pool.
+
+        Without this a long parameter sweep accumulates one pool per `Bunch`
+        and keeps the database file open for the lifetime of the process.
+        """
+        db, self.db = self.db, None
+        if db is not None:
+            db.executable.engine.dispose()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
+
+    def dict_to_path(self, folder, params):
         """
         Return a file path for an embedding based on parameters.
+
+        The name is a digest of a canonical serialisation of `params`, so two
+        different parameter sets can never land in the same file. Nested dicts
+        keep their own namespace, which the old flattened `k_v` scheme did not:
+        `impl_args` and `pair_args` sharing a key name mapped to one slot.
         """
+        canonical = _canonical(dict(params))
+        blob = json.dumps(canonical, sort_keys=True, default=repr)
+        digest = hashlib.blake2b(blob.encode("utf-8"), digest_size=8).hexdigest()
 
-        # cast integer floats to ints
-        for k, v in dict.items():
-            if type(v) is float:
-                if v.is_integer():
-                    dict[k] = int(v)
+        prefix = _readable_prefix(canonical)
+        stem = (
+            f"{prefix}_{CACHE_FORMAT}-{digest}"
+            if prefix
+            else f"{CACHE_FORMAT}-{digest}"
+        )
+        return self.path / folder / f"{stem}.npz"
 
-        filenames = [f"{k}_{v}".lower() for k, v in dict.items()]
-        filename = "_".join(sorted(filenames))
-        if len(filename) == 0:
-            filename = "default"
+    def _effective_pair_args(self, pair_args=None, **kwargs):
+        """
+        Resolve the *full* argument set `count_pairs` will actually run with.
 
-        filename += ".npz"
-        full_path = self.path / folder / filename
-        return full_path
+        Keying a cache on what the caller happened to spell leaves every
+        defaulted parameter -- and everything routed through `**kwargs` -- out
+        of the key, so a matrix computed with one window is served for another.
+        Binding against the real signature makes `pair_counts()` and
+        `pair_counts(window=2)` one entry, and `window=2` and `window=10` two.
+        """
+        pair_args = {} if pair_args is None else pair_args
+        # `bind` raises on unknown or duplicated names, exactly as the real call
+        # would, so a typo cannot silently create a second cache entry.
+        bound = inspect.signature(pair_counts.count_pairs).bind(
+            self.corpus, **pair_args, **kwargs
+        )
+        bound.apply_defaults()
+        effective = dict(bound.arguments)
+        effective.pop("corpus", None)
+        return effective
 
     def pair_counts(self, **kwargs):
         """
         Count pairs.
         """
-        pair_path = self.dict_to_path("pair_counts", kwargs)
+        pair_path = self.dict_to_path(
+            "pair_counts", self._effective_pair_args(**kwargs)
+        )
         if pair_path.is_file():
             try:
                 logger.info("retrieved already saved pair count")
                 return load_matrix(pair_path)
             except Exception as e:
-                logger.info(f"creating pair counts, error while loading files: {e}")
+                logger.info("creating pair counts, error while loading files: %s", e)
 
-        print("create new pair counts")
+        logger.info("create new pair counts")
         pair_path.parent.mkdir(parents=True, exist_ok=True)
         count_matrix = pair_counts.count_pairs(self.corpus, **kwargs)
         save_matrix(pair_path, count_matrix)
         return count_matrix
 
-    def pmi_matrix(self, cds=0.75, pair_args={}, **kwargs):
+    def pmi_matrix(self, cds=0.75, pair_args=None, **kwargs):
         """
         Create a PMI matrix.
         """
-        pmi_path = self.dict_to_path("pmi", {"cds": cds, **pair_args})
+        pair_args = {} if pair_args is None else pair_args
+        # `**kwargs` reaches `count_pairs` too, so it has to be in the key
+        pmi_path = self.dict_to_path(
+            "pmi",
+            {"cds": cds, "pair_args": self._effective_pair_args(pair_args, **kwargs)},
+        )
         if pmi_path.is_file():
             try:
                 logger.info("retrieved already saved pmi")
                 return load_matrix(pmi_path)
             except Exception as e:
-                logger.info(f"creating new pmi, error while loading files: {e}")
+                logger.info("creating new pmi, error while loading files: %s", e)
 
-        print("create new pmi")
+        logger.info("create new pmi")
         counts = self.pair_counts(**pair_args, **kwargs)
 
         start = timer()
         pmi_matrix = pmi.calc_pmi(counts, cds)
 
         end = timer()
-        logger.info("pmi took " + str(round(end - start, 2)) + " seconds")
+        logger.info("pmi took %s seconds", round(end - start, 2))
 
         pmi_path.parent.mkdir(parents=True, exist_ok=True)
         save_matrix(pmi_path, pmi_matrix)
@@ -123,7 +231,7 @@ class Bunch:
         self,
         neg=1,
         cds=0.75,
-        pair_args={},
+        pair_args=None,
         keyed_vectors=False,
         evaluate=True,
         **kwargs,
@@ -131,52 +239,58 @@ class Bunch:
         """
         Gets the PMI matrix.
         """
+        pair_args = {} if pair_args is None else pair_args
         m = self.pmi_matrix(cds, pair_args, **kwargs)
         embd = pmi.PPMIEmbedding(m, neg=neg)
         if evaluate:
             eval_results = self.eval_sim(embd)
         if keyed_vectors:
             # because of the large dimensions, the matrix will get huge!
-            return self.to_keyed_vectors(embd.m.todense(), m.shape[0])
+            embd = self.to_keyed_vectors(embd.m.toarray(), m.shape[0])
         if evaluate:
             return embd, eval_results
         return embd
 
     def svd_matrix(
-        self, impl, impl_args={}, dim=500, neg=1, cds=0.75, pair_args={}, **kwargs
+        self, impl, impl_args=None, dim=500, neg=1, cds=0.75, pair_args=None, **kwargs
     ):
         """
         Do the actual SVD computation.
         """
-        assert impl in ["scipy", "gensim", "scikit", "sparsesvd"]
+        if impl not in VALID_IMPLS:
+            raise ValueError(f"impl must be one of {sorted(VALID_IMPLS)}, got {impl!r}")
+
+        impl_args = {} if impl_args is None else impl_args
+        pair_args = {} if pair_args is None else pair_args
 
         svd_path = self.dict_to_path(
             "svd",
             {
                 "impl": impl,
-                **impl_args,
+                "impl_args": impl_args,
                 "neg": neg,
                 "cds": cds,
                 "dim": dim,
-                **pair_args,
+                # `**kwargs` reaches `count_pairs` too, so it has to be in the key
+                "pair_args": self._effective_pair_args(pair_args, **kwargs),
             },
         )
-        logger.debug(f"looking up the file: {svd_path}")
+        logger.debug("looking up the file: %s", svd_path)
         if svd_path.is_file():
             try:
                 logger.info("retrieved already saved svd")
                 return load_arrays(svd_path)
             except Exception as e:
-                logger.info(f"creating new svd, error while loading files: {e}")
+                logger.info("creating new svd, error while loading files: %s", e)
 
-        print("creating new svd")
+        logger.info("creating new svd")
         m = self.pmi_matrix(cds, pair_args, **kwargs)
         m = pmi.PPMIEmbedding(m, neg=neg, normalize=False)
 
         start = timer()
         ut, s = svd.calc_svd(m, dim, impl, impl_args)
         end = timer()
-        logger.info("svd took " + str(round((end - start) / 60, 2)) + " minutes")
+        logger.info("svd took %s minutes", round((end - start) / 60, 2))
 
         svd_path.parent.mkdir(parents=True, exist_ok=True)
         save_arrays(svd_path, ut, s)
@@ -192,8 +306,8 @@ class Bunch:
         neg=1,
         cds=0.75,
         impl="scipy",
-        impl_args={},
-        pair_args={},
+        impl_args=None,
+        pair_args=None,
         keyed_vectors=False,
         evaluate=True,
         **kwargs,
@@ -201,6 +315,8 @@ class Bunch:
         """
         Gets and SVD embedding.
         """
+        impl_args = {} if impl_args is None else impl_args
+        pair_args = {} if pair_args is None else pair_args
         ut, s = self.svd_matrix(
             impl=impl,
             impl_args=impl_args,
@@ -225,7 +341,8 @@ class Bunch:
         Transform to gensim's keyed vectors structure for further usage.
         https://github.com/RaRe-Technologies/gensim/blob/develop/gensim/models/keyedvectors.py
         """
-        vectors = WordEmbeddingsKeyedVectors(vector_size=dim)
+        embd_matrix = np.asarray(embd_matrix)
+        vectors = KeyedVectors(vector_size=dim)
         tokens = self.corpus.vocab.tokens
         if delete_unknown:
             # delete last row (for <UNK> token)
@@ -234,7 +351,7 @@ class Bunch:
             # the last token is the UNK token so append it
             tokens.append("<UNK>")
 
-        vectors.add(tokens, embd_matrix)
+        vectors.add_vectors(tokens, embd_matrix)
         return vectors
 
     def eval_sim(self, embd, **kwargs):

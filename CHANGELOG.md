@@ -1,0 +1,229 @@
+# Changelog
+
+## Unreleased
+
+Modernization of the package for current Python and dependency versions.
+Everything below is user-visible; several items change numeric results.
+
+### Breaking
+
+-   **Python `>=3.10,<3.14` is now required.** Python 3.6-3.9 are dropped. 3.14 is
+    explicitly unsupported: no cp314 gensim wheel exists at any version, and the
+    sdist does not compile against CPython 3.14 (gensim's vendored Cython
+    dereferences `PyDictObject->ma_version_tag`, which was removed).
+-   **`gensim>=4,<5` is now required.** `to_keyed_vectors` returns a `KeyedVectors`
+    rather than a `WordEmbeddingsKeyedVectors`. Downstream code using gensim-3
+    APIs (`.vocab`, `.add`) breaks.
+-   **KeyedVectors are float32, not float64.** gensim 4's `KeyedVectors` defaults to
+    float32, so similarity scores shift in the last digits.
+-   **`spacy>=3,<4` is now required** (with an explicit `click>=8.1` in the `full`
+    extra, without which `import spacy` fails on current typer releases).
+-   **The spaCy pipeline is loaded with `exclude=["ner"]` instead of `disable=`.**
+    The NER component is no longer present in the pipeline at all.
+-   **`impl="sparsesvd"` removed** from `Bunch.svd()`, `Bunch.svd_matrix()` and
+    `svd.calc_svd()`. It was already unusable — `sparsesvd`'s last release is from
+    2013, is sdist-only and no longer builds. It now raises a clear `ValueError`
+    instead of `NameError`.
+-   **`low_memory` / `low_memory_chunk` kwargs removed** from `count_pairs`. The
+    dense `(V+1)x(V+1)` outer product they existed to work around is gone;
+    subsampling is now applied via sparse diagonal scaling, which is exact and
+    O(nnz).
+-   **`evaluation.read_test_data(lang, type)` is now `read_test_data(lang, kind)`**
+    and returns a `list` of `importlib.resources` `Traversable`s rather than a
+    generator of `pathlib.Path`s. Positional callers are unaffected; keyword
+    callers break, as does code calling `pathlib`-only methods on the results.
+    `.read_text()`, `.name` and `.suffix` all still work.
+-   **Other keyword-argument renames** (all shadowed a builtin; only the first is
+    a plausible keyword call in the wild): `Corpus.texts_to_file(dir=)` →
+    `directory=`, `Bunch.dict_to_path(dict=)` → `params=`,
+    `experiment.flatten_dict(dict=)` → `mapping=`, `utils.chunks(l=)` → `seq=`.
+-   **`Bunch.pmi(keyed_vectors=True)` now returns `(vectors, results)`** instead
+    of a bare `KeyedVectors`, matching `Bunch.svd(keyed_vectors=True)`. With the
+    default `evaluate=True` the old form raised `IndexError`, so only
+    `evaluate=False` callers are affected; they now get a one-element unpack.
+-   **`subsample="prob"` produces different (and now correct) results** — see
+    "Fixed". Anything trained with `subsample="prob"` needs re-running.
+-   **`texts_to_sents` gained an `n_process` parameter, defaulting to 1.**
+    Multi-process spaCy piping is now opt-in and must only be enabled by callers
+    that are not already inside a process pool and whose module is protected by
+    an `if __name__ == "__main__"` guard.
+-   **Analogy evaluation results change from a constant 0.0 to real numbers**, and
+    `"score"` changes from a raw hit count to an accuracy ratio. Stored
+    `results.db` rows and plots comparing old and new analogy scores are not
+    comparable. See "Fixed" below.
+-   **Invalid arguments now raise instead of being silently ignored under `-O`.**
+    Argument validation moved from `assert` to explicit `raise`. In particular
+    `dynamic_window=0` now raises where it previously skipped validation (`0 ==
+    False` made the old guard truthy).
+-   **`save_matrix` writes `scipy.sparse.save_npz` format.** `load_matrix` still
+    reads the old hand-rolled layout, so existing caches keep working.
+-   **`from hyperhyper import *` no longer exports `logging`, `NullHandler` or the
+    submodules**, now that `__init__.py` defines `__all__`.
+-   `Bunch.pmi` / `Bunch.svd` now carry their real `__name__`, `__doc__` and
+    signature (the `record` decorator uses `functools.wraps`). Only breaks code
+    introspecting the former `wrapper`.
+-   **`PPMIEmbedding.most_similar()` and `SVDEmbedding.most_similar()` now return
+    `[(index, score), ...]`** instead of `[(score, index), ...]`, matching
+    `most_similar_vectors()` in both classes. Indices are plain `int` and scores
+    plain `float`. Callers unpacking the old order get silently transposed
+    results — this needs a code change, not a config change.
+-   **The subsampling threshold is now `subsample_factor x total token count`**
+    (word2vec's `sample * train_words`) instead of `x sentence count`. Every
+    embedding trained with `subsample="deter"` or `"prob"` changes. At 1M
+    sentences / 20M tokens with the default `1e-5`, the threshold goes from 10 to
+    200; rare words previously dragged into an `f^-1/2` reweighting are now left
+    alone, as in Levy & Goldberg 3.1. To reproduce old numbers, divide your
+    `subsample_factor` by your average sentence length.
+-   **`PPMIEmbedding(..., neg=None)` now clips negatives to 0** like every other
+    `neg`. It previously returned *signed* PMI and leaked `-inf` for any stored
+    zero, which destroyed the affected row in `normalize()`. `neg=1` (the
+    default) is unchanged.
+-   **All on-disk caches are invalidated.** Cache files are now named
+    `<params>_v2-<blake2b digest>.npz`, and the key is the *full effective*
+    parameter set (defaults resolved from `count_pairs`' signature, `**kwargs`
+    included) rather than the arguments the caller happened to spell. Old
+    entries are never found again and are recomputed; they are not deleted, so
+    remove them by hand to reclaim space. This is deliberate — the old names
+    could not distinguish `window=2` from `window=10`.
+-   **`results.db` rows written by older versions are not comparable.** `record`
+    now writes every parameter, including positional ones and unspoken defaults,
+    and attributes loose `**kwargs` to `pair_args__*` instead of sibling columns.
+    Old rows lack `dim`/`cds` and may carry a contradictory `window` column.
+-   **`Bunch(path, corpus=None, force_overwrite=True)` now raises `ValueError`**
+    instead of deleting the bunch and then failing to reload it.
+-   **`results(order=...)` is validated and `limit` is coerced to `int`.**
+    Anything outside `column [asc|desc]` raises `ValueError`.
+-   **Evaluation metrics change across the board**, because the numbers they
+    replaced were wrong (see "Fixed"): word-similarity scores rise, analogy
+    accuracies rise, `oov` rises on datasets with multi-word or
+    unanswerable-after-lemmatization rows, and `fullscore` is now
+    `score - abs(score) * oov`. The last differs from the old
+    `score * (1 - oov)` only where `score < 0`. Results recorded by earlier
+    versions cannot be compared against new ones.
+
+### Fixed
+
+-   **Analogy evaluation was always exactly 0.0.** Three separate bugs:
+    `most_similar_vectors` returns `[(idx, score), ...]`, so the `b_ in guesses`
+    membership test could never be true; the 3CosAdd arithmetic was inverted
+    (the datasets are `a a_ b b_`, so the query is `a_ - a + b`); and the score
+    was a raw hit count rather than an accuracy.
+-   **`SVDEmbedding.most_similar_vectors` did not exist**, so
+    `Bunch.eval_analogy` raised `AttributeError` for SVD embeddings.
+-   **`seed=` was a silent no-op in worker processes.** `random.seed()` was called
+    in the parent only; under `spawn` (macOS default, and `forkserver` on Linux
+    from 3.14) workers got a fresh entropy-seeded RNG, making `subsample="prob"`
+    and `dynamic_window="prob"` non-reproducible. Each worker now derives a
+    per-file RNG from a stable string seed. This also fixes pre-existing
+    nondeterminism from futures completing out of order.
+-   **`.todense()` produced a `numpy.matrix`**, which propagated into
+    `KeyedVectors.vectors` and made `most_similar()` fail outright.
+-   **`calc_pmi` silently upcast float32 counts to float64** via `dok_matrix`,
+    doubling memory on the largest object in the pipeline.
+-   **`np.reciprocal` on integer counts performed floor division**, silently
+    returning an all-zero PMI matrix. Reciprocals are now guarded, which also
+    handles zero row/column sums that previously became `inf` -> `nan`.
+-   Zero-norm rows in `SVDEmbedding.normalize` produced `nan` (and a
+    `RuntimeWarning`) rather than staying zero.
+-   **The database retry loop was unbounded.** A permanent failure (schema
+    mismatch, read-only filesystem) hung the process forever, printing the same
+    traceback every 10 seconds. It is now a bounded exponential backoff that
+    catches `SQLAlchemyError` specifically, and the SQLite busy timeout is set to
+    30s, which removes the reason the loop existed.
+-   **`read_test_data` handed back paths whose files had already been deleted.**
+    `as_file` extracts the dataset directory to a temporary location and removes
+    it again when the context exits, so returning paths from inside the `with`
+    produced dangling names under any non-filesystem loader (zipimport, a
+    `.pyz`/pex bundle, a zipped Lambda layer). Verified against a zipimported
+    build: reading the first returned path raised `FileNotFoundError`. It now
+    returns `Traversable`s and reads them lazily, which needs no extraction.
+-   **`subsample="prob"` was inverted.** The map it built was the word2vec
+    *discard* probability (`1 - sqrt(t/count)`), but `iterate_tokens` uses it as
+    a *keep* probability. Frequent words were therefore kept ~99% of the time
+    and rare words discarded ~71% of the time — the opposite of subsampling, and
+    the opposite of `subsample="deter"`, which always used the correct factor.
+    Both branches now share `subsample_keep_probabilities()`. **This changes
+    every result computed with `subsample="prob"`.**
+-   **`eval_similarity` / `eval_analogies` raised `ZeroDivisionError`** when no
+    dataset had an in-vocabulary row — the normal case for the small corpora
+    this package targets, and reachable straight from `Bunch.svd()` and
+    `Bunch.pmi()`, which evaluate by default. They now return `nan` micro/macro
+    scores with an empty `results` list and log a warning.
+-   **`Corpus.from_text_files` was not reproducible**, seed or no seed. Per-file
+    vocabularies were merged in worker-completion order, and `filter_extremes`
+    breaks document-frequency ties by insertion order, so each run kept a
+    different *set* of tokens. Results are now buffered and merged in sorted
+    filename order, and the input glob is sorted.
+-   **`Bunch.pmi(keyed_vectors=True)` crashed** with the default `evaluate=True`:
+    it returned a bare `KeyedVectors` where the `record` decorator expected the
+    `(embedding, results)` tuple that `Bunch.svd` returns, and then indexed a
+    vector with a string. See "Breaking" — it is now symmetric with `Bunch.svd`.
+-   **`nlp.pipe(..., n_process=-1)` made `texts_to_sents` unusable.** spaCy's
+    child processes re-import the parent `__main__`, so an unguarded script or a
+    notebook cell re-entered the function and spawned pools until it hung; and
+    because `texts_to_sents` is itself called from inside a
+    `ProcessPoolExecutor`, `Corpus.from_text_files` fanned out to `cpu_count²`
+    spaCy processes. It is now `n_process=1` by default and opt-in per call.
+-   Mutable default arguments (`pair_args={}`, `impl_args={}`, `query={}`) and an
+    in-place mutation in `Bunch.dict_to_path` that could have corrupted the
+    shared `default_pair_args` for the process lifetime.
+-   **Word-similarity gold scores were ranked as strings, not numbers.** The
+    third dataset column was never converted to `float`, and `spearmanr`
+    column-stacks its arguments — so a float array stacked with a string array
+    promoted *both* columns to strings and ranked them lexicographically
+    (`"10" < "2.5" < "9"`). A perfect embedding, which must score exactly 1.0,
+    reported 0.66-0.75 depending on the file; worst on `en/bruni_men.txt`, whose
+    gold values run `0.000000`-`50.000000` with varying integer width and which
+    is half of all English rows, so it dominated the micro average.
+-   **The matrix cache ignored `**kwargs`, silently serving a wrong matrix.**
+    `Bunch.pmi(window=10)` returned the matrix cached for `window=2`; a sweep
+    recorded several database rows that all held the first window's embedding,
+    and the answer depended on call order. Same hole in `svd_matrix`.
+    `dict_to_path` could also collide two different parameter sets onto one
+    filename (case was folded, the `_` separator was forgeable).
+-   **Analogy rows unanswerable by construction were scored as wrong** instead of
+    skipped. After the default lemmatizing preprocessing `writes` -> `write`
+    makes the answer equal to one of the question words, which affects 31% of
+    `en/google.txt` and 80% of `en/msr.txt` rows — capping `msr` accuracy near
+    0.20 invisibly. They now count as OOV.
+-   **`to_item` substituted a different word** rather than skipping multi-token
+    entries: `["vice", "president"]` was scored as `vice`. Affects hyphenated and
+    multi-word entries (20 in `en/luong_rare`, 10 in `de/gur350`).
+-   **`PPMIEmbedding.__init__` destroyed the matrix it was given** (`self.m =
+    matrix` without a copy, then rebinding `.data`). Building a second embedding
+    from the same matrix silently returned an all-zero `log(log(...))` instead of
+    raising. `bunch.pmi_matrix()` hands that matrix to the user.
+-   **`results_from_db` crashed on any string filter and interpolated raw SQL.**
+    `{"impl": "scipy"}` raised `no such column: scipy`, making every
+    string-valued column unfilterable; `order` and `limit` were injectable.
+-   **Parallel pair counting was not reproducible.** Partial float32 matrices
+    were summed in completion order; merging in a fixed order makes the cached
+    `.npz` bit-identical between runs.
+-   **`impl="scipy"` returned singular values ascending** while `gensim` and
+    `scikit` returned them descending. Similarity and analogy scores were
+    unaffected (column scaling plus row normalization), but `s[0]`, `ut[:, :k]`
+    slices and the arrays persisted by `svd_matrix` were reversed.
+-   **One corpus could not feed two bunches.** `texts_to_file` overwrote
+    `corpus.texts` with the paths it had just written, so the second bunch
+    pickled those paths as if they were token lists and the workers died with
+    `'PosixPath' object is not iterable`.
+
+### Changed
+
+-   Packaging moved from Poetry to PEP 621 + hatchling; `poetry.lock` replaced by
+    `uv.lock`.
+-   CI moved from Travis to GitHub Actions, testing 3.10-3.13.
+-   Linting and formatting via ruff.
+-   `print()` calls replaced with module loggers, restoring the `NullHandler`
+    contract that `__init__.py` sets up.
+-   Worker pool sizing respects CPU affinity and cgroup quotas rather than using
+    the raw host core count — including the two `ProcessPoolExecutor`s in
+    `corpus.py` and the one in `pair_counts.py`, which previously took the bare
+    `os.cpu_count()` default.
+-   `nlp.pipe` now runs batched (`batch_size=1000`). It is still single-process
+    by default; see `n_process` under "Breaking".
+-   `calc_pmi` no longer forces float32. It promotes integer counts to float but
+    preserves a float64 input, which previously would have been computed at
+    float32 precision and returned with a float64 dtype.
+-   `subsample="deter"` and `subsample="prob"` now derive their factor from one
+    shared function, so they cannot drift apart again.

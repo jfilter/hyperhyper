@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+      - run: uv sync --locked --group dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked --extra full --group dev
+      # no spaCy model here on purpose: `-m "not slow"` deselects every test
+      # that needs it, and downloading it costs ~12 MB per matrix entry
+      - run: uv run pytest -m "not slow"
+
+  test-slow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked --extra full --group dev
+      - run: uv run python -m spacy download en_core_web_sm
+      - run: uv run pytest -m slow
+
+  # The lockfile pins the newest of everything, so the matrix above only ever
+  # proves the package works at the TOP of its declared ranges. This job proves
+  # the BOTTOM -- the lower bounds in pyproject.toml are a promise to anyone
+  # installing into an environment that already has older packages. It caught
+  # scipy>=1.11 being a version too low for sparse.diags_array.
+  floor:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      # --resolution lowest-direct: oldest version satisfying each declared
+      # bound. --no-sources/--only-binary keeps it to real wheels, so this
+      # measures what a user actually gets rather than a source build.
+      - run: uv pip install --only-binary :all: --resolution lowest-direct -e ".[full]" "pytest>=8"
+      - run: uv pip list
+      - run: uv run --no-sync pytest -m "not slow"

@@ -1,4 +1,4 @@
-# `hyperhyper` [![Build Status](https://travis-ci.com/jfilter/hyperhyper.svg?branch=master)](https://travis-ci.com/jfilter/hyperhyper) [![PyPI](https://img.shields.io/pypi/v/hyperhyper.svg)](https://pypi.org/project/hyperhyper/) [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/hyperhyper.svg)](https://pypi.org/project/hyperhyper/) [![PyPI - Downloads](https://img.shields.io/pypi/dm/hyperhyper)](https://pypistats.org/packages/hyperhyper)
+# `hyperhyper` [![CI](https://github.com/jfilter/hyperhyper/actions/workflows/ci.yml/badge.svg)](https://github.com/jfilter/hyperhyper/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/hyperhyper.svg)](https://pypi.org/project/hyperhyper/) [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/hyperhyper.svg)](https://pypi.org/project/hyperhyper/) [![PyPI - Downloads](https://img.shields.io/pypi/dm/hyperhyper)](https://pypistats.org/packages/hyperhyper)
 
 `hyperhyper` is a Python package to construct word embeddings for small data.
 
@@ -16,14 +16,24 @@ This package implements these approaches (somewhat) efficiently.
 
 ## Installation
 
+Requires Python 3.10–3.13. (3.14 is not supported yet: `gensim` has no wheel for it.)
+
 ```bash
 pip install hyperhyper
+# or: uv add hyperhyper
 ```
 
-To enable all features (such as pre-processing with spaCy):
+To enable all features (pre-processing with spaCy, `impl="scikit"` for the SVD):
 
 ```bash
 pip install hyperhyper[full]
+```
+
+The spaCy-based preprocessing also needs a language model. `hyperhyper` downloads it
+on first use, but in CI or offline environments install it up front:
+
+```bash
+python -m spacy download en_core_web_sm
 ```
 
 ## Usage
@@ -41,10 +51,10 @@ bunch = hy.Bunch("news_bunch", corpus)
 vectors, results = bunch.svd(keyed_vectors=True)
 
 results["results"][1]
->>> {"name": "en_ws353",
- "score": 0.6510955349164682,
- "oov": 0.014164305949008499,
- "fullscore": 0.641873218557878}
+>>> {"name": "en_ws353",  # the evaluation dataset
+ "score": ...,           # Spearman correlation with the human judgements
+ "oov": ...,             # fraction of pairs skipped as out-of-vocabulary
+ "fullscore": ...}       # score, penalized by the out-of-vocabulary fraction
 
 vectors.most_similar("berlin")
 >>> [("vienna", 0.6323208808898926),
@@ -66,24 +76,22 @@ More documentation may be forthcoming. Until then you have to read the [source c
 
 ## Performance Optimization
 
-### Install MKL
+### BLAS backend
 
-If you have an Intel CPU, it's recommended to use [MKL](https://en.wikipedia.org/wiki/Math_Kernel_Library) to speed up numeric executions.
-Otherwise, the default [OpenBLAS](https://en.wikipedia.org/wiki/OpenBLAS) will get installed when initially installing `hyperhyper`.
+`pip install hyperhyper` pulls numpy wheels linked against [OpenBLAS](https://en.wikipedia.org/wiki/OpenBLAS) (Linux/Windows) or Accelerate (recent macOS).
+Both are fine for typical use.
 
-It can be challenging to correctly set up MKL.
-A conda package by Intel may help you.
+If you have an Intel CPU and want [MKL](https://en.wikipedia.org/wiki/Math_Kernel_Library), install it from conda-forge:
 
 ```bash
-conda install -c intel intelpython3_core
-pip install hyperhyper
+conda install -c conda-forge "libblas=*=*mkl"
 ```
 
-Verify wheter `mkl_info` is present in the numpy config:
+Check which backend numpy actually uses — look at the `Build Dependencies` → `blas` → `name` field (`mkl`, `openblas` or `accelerate`):
 
 ```python
 >>> import numpy
->>> numpy.__config__.show()
+>>> numpy.show_config()
 ```
 
 ### Disable Numerical Multithreading
@@ -113,6 +121,8 @@ Then do some math magic around matrix operations (PPMI, SVD) to get low-dimensio
 
 The count-based word-embeddings by `hyperhyper` are deterministic.
 So multiple runs of experiments with identical parameters will yield the same results.
+(The randomized options — `dynamic_window="prob"`, `subsample="prob"` — are reproducible
+through the `seed` parameter.)
 Word2vec and others unstable.
 Due to randomness, their results will vary.
 
@@ -134,7 +144,17 @@ This software is based on ideas stemming from the following papers:
 
 ## Development
 
-Install and use [poetry](https://python-poetry.org/).
+Install and use [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync --extra full
+uv run python -m spacy download en_core_web_sm
+uv run pytest
+uv run ruff check .
+uv run ruff format .
+```
+
+`pytest -m "not slow"` skips the tests that need the spaCy model.
 
 ## Contributing
 
@@ -144,7 +164,6 @@ If you have a **question**, found a **bug** or want to propose a new **feature**
 
 ## Future Work / TODO
 
--   evaluation for analogies
 -   implement counting in a more efficient programming language, e.g. Cython.
 
 ## `hyperhyper`?
