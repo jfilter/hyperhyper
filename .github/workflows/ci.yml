@@ -67,6 +67,8 @@ jobs:
       # bound. --only-binary keeps it to real wheels, so this measures what a
       # user actually gets rather than a source build.
       # (quoted: the ":all: " in --only-binary is a mapping to bare YAML)
+      # `uv pip install` needs an environment; unlike `uv sync` it creates none.
+      - run: uv venv
       - run: 'uv pip install --only-binary :all: --resolution lowest-direct -e ".[full]" "pytest>=8"'
       - run: uv pip list
       - run: uv run --no-sync pytest -m "not slow"
