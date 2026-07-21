@@ -263,6 +263,7 @@ class CountPairsClosure:
                 self.dynamic_window_decay,
                 self.delete_oov,
                 self.subsampler_prob,
+                self.subsampler_dirty,
                 self.vocab_size,  # <UKN> id
                 rng,
             ):
@@ -278,22 +279,50 @@ def iterate_tokens(
     dynamic_window_decay,
     delete_oov,
     subsampler_prob,
+    subsampler_dirty,
     unkown_id,
     rng,
 ):
     """
     iterate over tokens in a sentence and counting pairs
+
+    `subsampler_prob` is a *keep* probability per token id (see
+    `count_pairs`). When it is set, two treatments of the dropped tokens are
+    possible and `subsampler_dirty` selects between them:
+
+      * clean (``subsampler_dirty`` False): a dropped token is blanked to
+        `None` but keeps its position, so the window still spans its slot and
+        does NOT reach past it. The inner loop skips the `None` slots.
+      * dirty (``subsampler_dirty`` True): a dropped token is removed from the
+        sequence before any window is built, so the window closes up and
+        reaches one word further. This is the variant Levy, Goldberg & Dagan
+        (2015, section 3.1) report, and it is what hyperwords' `corpus2pairs.py`
+        does (`if random() > keep_prob: continue`, before pairs are emitted).
+
+    Both treatments draw exactly one `rng.random()` per subsample-eligible
+    token, in token order, so the per-token random stream has the same shape
+    regardless of which one is chosen.
     """
     if delete_oov:
         tokens = [t for t in tokens if t != unkown_id]
 
     if subsampler_prob is not None:
-        tokens = [
-            t
-            if t not in subsampler_prob or rng.random() <= subsampler_prob[t]
-            else None
-            for t in tokens
-        ]
+        if subsampler_dirty:
+            # dirty: drop the token outright, so the window later closes up
+            tokens = [
+                t
+                for t in tokens
+                if t not in subsampler_prob or rng.random() <= subsampler_prob[t]
+            ]
+        else:
+            # clean: blank the token but keep its slot, so the window still
+            # counts the slot and does not reach past it
+            tokens = [
+                t
+                if t not in subsampler_prob or rng.random() <= subsampler_prob[t]
+                else None
+                for t in tokens
+            ]
 
     len_tokens = len(tokens)
     res = []
@@ -320,7 +349,7 @@ def iterate_tokens(
     return res
 
 
-VALID_MODES = frozenset({"deter", "prob", "off", "decay"})
+VALID_MODES = frozenset({"deter", "prob", "dirty", "off", "decay"})
 
 
 def subsample_keep_probabilities(counts, threshold):
@@ -358,6 +387,27 @@ def count_pairs(
     probability `sqrt(threshold / count)` above that. Keeping the word2vec
     convention (rather than, say, a fraction of the vocabulary) is deliberate,
     so a value can be carried over from a word2vec/hyperwords setup unchanged.
+
+    `subsample` selects how frequent-word subsampling is applied. Levy,
+    Goldberg & Dagan (2015, section 3.1) distinguish two ways of dropping
+    tokens, which differ in whether a dropped token's slot still bounds the
+    context window:
+
+      * ``"prob"`` -- CLEAN subsampling. A dropped token is blanked but keeps
+        its position, so the window still counts its slot and does NOT reach
+        past it. Randomized per token, one draw per subsample-eligible token.
+      * ``"dirty"`` -- DIRTY subsampling, the variant the paper REPORTS. A
+        dropped token is removed from the sequence BEFORE any window is built,
+        so the window closes up and reaches one word further, creating
+        co-occurrences between words that were separated only by the dropped
+        token. This matches hyperwords' `corpus2pairs.py`, which drops tokens
+        (`if random() > keep_prob: continue`) before emitting any pairs.
+        Randomized, using the same per-token draw pattern as ``"prob"``.
+      * ``"deter"`` (default) -- a deterministic post-hoc approximation:
+        the final count matrix is scaled by
+        ``diag(sqrt(t/f)) M diag(sqrt(t/f))``. No tokens are dropped, so this
+        is neither the clean nor the dirty variant, only their expectation.
+      * ``"off"``/``None`` -- no subsampling.
     """
     for x in (dynamic_window, subsample):
         if x is not None and x is not False and x not in VALID_MODES:
@@ -376,11 +426,13 @@ def count_pairs(
     subsample_value = subsample_factor * total_tokens
 
     subsampler_prob = None
-    if subsample == "prob":
+    if subsample in ("prob", "dirty"):
         # `iterate_tokens` compares against this as a *keep* probability, so it
         # has to fall as the count rises. It used to be `1 - sqrt(...)`, the
         # word2vec *discard* probability, which kept frequent words and dropped
         # rare ones -- exactly backwards, and the opposite of "deter" below.
+        # "prob" and "dirty" share this exact same keep map; they differ only in
+        # how `iterate_tokens` treats the dropped tokens (see its docstring).
         subsampler_prob = subsample_keep_probabilities(corpus.counts, subsample_value)
 
     count_matrix = count_pairs_parallel(
@@ -392,6 +444,7 @@ def count_pairs(
             dynamic_window_decay=decay_rate if dynamic_window == "decay" else None,
             delete_oov=delete_oov,
             subsampler_prob=subsampler_prob,
+            subsampler_dirty=subsample == "dirty",
             vocab_size=corpus.vocab.size,
             seed=seed,
         ),

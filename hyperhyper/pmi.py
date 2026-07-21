@@ -9,6 +9,10 @@ import numpy as np
 from gensim import matutils
 from scipy import sparse
 
+# Epsilon for the 3CosMul denominator, shared with the SVD implementation and
+# taken verbatim from Levy's ``hyperwords`` (see ``svd.COSMUL_EPS``).
+from .svd import COSMUL_EPS
+
 
 def calc_pmi(counts, cds):
     """
@@ -169,19 +173,25 @@ class PPMIEmbedding:
         best = heapq.nlargest(n, zip(scores.data, scores.indices, strict=True))
         return [(int(idx), float(score)) for score, idx in best]
 
-    def most_similar_vectors(self, positives, negatives, topn=10):
+    def most_similar_vectors(self, positives, negatives, topn=10, objective="add"):
         """
-        Analogy-style query: rank words by similarity to the mean of the
-        ``positives`` vectors minus the ``negatives`` vectors.
+        Analogy-style query over the ``positives`` and ``negatives`` word indices.
 
-        The (unit-normalized) mean of the selected word vectors is compared
-        against every row; useful for "king - man + woman" style queries.
+        With ``objective="add"`` (the default, 3CosAdd) words are ranked by
+        similarity to the unit-normalized mean of the ``positives`` vectors minus
+        the ``negatives`` vectors -- the classic "king - man + woman" arithmetic.
+
+        With ``objective="mul"`` the 3CosMul objective of Levy & Goldberg (2014)
+        is used instead (see ``_most_similar_mul``). Both share the
+        ``(index, score)`` return convention.
+
         Assumes the vectors have been normalized.
 
         Args:
             positives: word indices to add.
             negatives: word indices to subtract.
             topn (int): number of results to return.
+            objective (str): ``"add"`` (3CosAdd) or ``"mul"`` (3CosMul).
 
         Returns:
             List of ``(index, score)`` tuples sorted by descending score --
@@ -190,12 +200,52 @@ class PPMIEmbedding:
         Some parts taken from gensim.
         https://github.com/RaRe-Technologies/gensim/blob/ea87470e4c065676d3d33df15b8db4192b30ebc1/gensim/models/keyedvectors.py#L690
         """
+        if objective == "mul":
+            return self._most_similar_mul(positives, negatives, topn)
+        if objective != "add":
+            raise ValueError(
+                f"objective must be 'add' (3CosAdd) or 'mul' (3CosMul), "
+                f"got {objective!r}"
+            )
         mean = [np.squeeze(self.represent(x).toarray()) for x in positives] + [
             -1 * np.squeeze(self.represent(x).toarray()) for x in negatives
         ]
         mean = matutils.unitvec(np.array(mean).mean(axis=0)).astype(np.float32)
 
         dists = self.m.dot(mean)
+
+        best = matutils.argsort(dists, topn=topn, reverse=True)
+        return [(best_idx, float(dists[best_idx])) for best_idx in best]
+
+    def _most_similar_mul(self, positives, negatives, topn):
+        """
+        3CosMul (Levy & Goldberg 2014), for the sparse SPPMI representation.
+
+        Ranks each candidate ``d`` by
+
+            (∏ cos(d, p) for p in positives) / (∏ cos(d, n) for n in negatives + ε)
+
+        with ``ε = COSMUL_EPS``, reproducing Levy's ``hyperwords``
+        ``analogy_eval.py`` scoring (``sa_ * sb * reciprocal(sa + 0.01)`` for the
+        analogy ``a:a_ :: b:?`` with ``positives=[a_, b]``, ``negatives=[a]``).
+
+        Unlike the dense SVD case, hyperwords does *not* remap sparse
+        similarities via ``(cos + 1) / 2``: the SPPMI rows are non-negative and
+        L2-normalized, so their cosine similarities already lie in ``[0, 1]``.
+        """
+
+        def sims(idx):
+            # cos(d, idx) for every row d, as a dense 1-D array
+            col = self.m.dot(self.represent(idx).T)
+            return np.squeeze(np.asarray(col.todense()))
+
+        dists = np.ones(self.m.shape[0], dtype=np.float64)
+        for x in positives:
+            dists = dists * sims(x)
+        denom = np.ones(self.m.shape[0], dtype=np.float64)
+        for x in negatives:
+            denom = denom * sims(x)
+        dists = dists / (denom + COSMUL_EPS)
 
         best = matutils.argsort(dists, topn=topn, reverse=True)
         return [(best_idx, float(dists[best_idx])) for best_idx in best]

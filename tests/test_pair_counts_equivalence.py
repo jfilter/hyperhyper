@@ -99,6 +99,7 @@ import pytest
 import hyperhyper
 from hyperhyper import pair_counts
 from hyperhyper.preprocessing import tokenize_texts
+from hyperhyper.utils import read_pickle
 
 # `bench/` is not a package on the install path; it is a sibling of `tests/`.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -441,8 +442,122 @@ def _run_statistical_comparison(corpus, window, dynamic_window, subsample, n_see
     _assert_means_agree(live, ref, label)
 
 
+# --------------------------------------------------------------------------
+# dirty subsampling: statistical parity against an independent reference
+# --------------------------------------------------------------------------
+#
+# `subsample="dirty"` (Levy, Goldberg & Dagan 2015, 3.1) postdates the frozen
+# `bench/reference.py` snapshot, which raises on the mode outright -- so it
+# cannot be checked against that reference the way "prob" is. It is checked
+# instead against the small, obviously-correct implementation below: a plain
+# nested-loop counter that deletes subsampled tokens *before* building windows
+# (the defining behaviour of the dirty variant) and draws its keep decisions
+# from an independent numpy RNG. Same keep probabilities, same window
+# mechanics, different RNG -- exactly the setup the statistical comparison
+# (`_assert_totals_agree` / `_assert_means_agree`) is built for.
+
+
+def _dirty_reference(corpus, window, subsample_factor, seed):
+    """
+    An independent, deliberately naive dirty-subsampling pair counter.
+
+    Deletes each subsampled token from the sentence before any window is built
+    (so the window closes up and reaches further), then counts a plain static
+    window. Uses a numpy RNG rather than `random.Random`, so it shares the
+    live code's *distribution* without sharing its draws.
+    """
+    total_tokens = sum(corpus.counts.values())
+    threshold = subsample_factor * total_tokens
+    keep = {
+        word: math.sqrt(threshold / count)
+        for word, count in corpus.counts.items()
+        if count > threshold
+    }
+    unknown_id = corpus.vocab.size
+    size = corpus.vocab.size + 1
+    matrix = np.zeros((size, size), dtype=np.float64)
+    rng = np.random.default_rng(seed)
+
+    # sorted() so chunk order matches the live merge order; the sum is over
+    # independent Bernoulli draws so the distribution does not depend on it
+    for path in sorted(corpus.texts):
+        for sentence in read_pickle(path):
+            tokens = [t for t in sentence if t != unknown_id]  # delete_oov
+            kept = [t for t in tokens if t not in keep or rng.random() <= keep[t]]
+            n = len(kept)
+            for i in range(n):
+                for j in range(max(0, i - window), min(n, i + window + 1)):
+                    if j != i:
+                        matrix[kept[i], kept[j]] += 1.0
+    return matrix
+
+
+def _sample_dirty(corpus, seeds, window):
+    live, ref = [], []
+    for seed in seeds:
+        live.append(
+            hyperhyper.count_pairs(
+                corpus,
+                window=window,
+                dynamic_window=None,
+                subsample="dirty",
+                subsample_factor=SUBSAMPLE_FACTOR,
+                seed=seed,
+            ).toarray()
+        )
+        ref.append(_dirty_reference(corpus, window, SUBSAMPLE_FACTOR, seed))
+    return np.array(live, dtype=np.float64), np.array(ref, dtype=np.float64)
+
+
+@pytest.mark.parametrize("window", [STAT_WINDOWS[0]])
+def test_dirty_subsampling_matches_independent_reference_fast(grid_corpus, window):
+    """
+    Dirty subsampling agrees in expectation with an independent reference, at a
+    seed count the fast suite can afford.
+    """
+    live, ref = _sample_dirty(
+        grid_corpus, range(1000, 1000 + N_STAT_SEEDS_FAST), window
+    )
+    label = f"window={window} subsample='dirty'"
+    _assert_totals_agree(live, ref, label)
+    _assert_means_agree(live, ref, label)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("window", STAT_WINDOWS)
+def test_dirty_subsampling_matches_independent_reference(grid_corpus, window):
+    """
+    The dirty variant's place in the parity grid: its own case, checked
+    statistically (like "prob") against an independent implementation because
+    the frozen f68cc74 reference predates the mode and cannot produce it.
+    """
+    live, ref = _sample_dirty(grid_corpus, range(1000, 1000 + N_STAT_SEEDS), window)
+    label = f"window={window} subsample='dirty'"
+    _assert_totals_agree(live, ref, label)
+    _assert_means_agree(live, ref, label)
+
+
+def test_dirty_differs_from_clean_subsampling(grid_corpus):
+    """
+    Keeps the parity test above honest: dirty and clean subsampling are not the
+    same computation. Because dirty closes windows up over dropped tokens, it
+    counts strictly more pairs in total than clean at the same seed.
+    """
+    kwargs = {
+        "window": 5,
+        "dynamic_window": None,
+        "subsample_factor": SUBSAMPLE_FACTOR,
+        "seed": 1234,
+    }
+    clean = hyperhyper.count_pairs(grid_corpus, subsample="prob", **kwargs)
+    dirty = hyperhyper.count_pairs(grid_corpus, subsample="dirty", **kwargs)
+    assert not np.array_equal(clean.toarray(), dirty.toarray())
+    assert dirty.sum() > clean.sum()
+
+
 @pytest.mark.parametrize(
-    ("dynamic_window", "subsample"), [("prob", None), (None, "prob")]
+    ("dynamic_window", "subsample"),
+    [("prob", None), (None, "prob"), (None, "dirty")],
 )
 def test_random_config_is_reproducible_for_a_fixed_seed(
     grid_corpus, dynamic_window, subsample

@@ -123,6 +123,9 @@ matrix. This is usually what you want.
 - **`eig`** (default `0`): eigenvalue weighting exponent. `0` uses the left
   singular vectors unweighted (`ut`); `1` scales by the singular values; other
   values by `s ** eig`.
+- **`add_context`** (default `False`): if `True`, use the paper's `w+c`
+  representation `U·Σ^eig + V·Σ^eig` (word vectors plus context vectors) instead
+  of `U·Σ^eig` alone. A distinct cache entry from the word-only embedding.
 - **`impl`** (default `"scipy"`): the SVD backend. One of `"scipy"` (exact
   truncated SVD via `scipy.sparse.linalg.svds`), `"gensim"` (randomized), or
   `"scikit"` (randomized via scikit-learn, which needs the `full` extra).
@@ -178,7 +181,9 @@ You can also evaluate an existing embedding directly:
 
 - `bunch.eval_sim(embd)` → word-similarity results (the same dict shape above).
 - `bunch.eval_analogy(embd)` → word-analogy results, same shape but `score` is an
-  accuracy in `[0, 1]`.
+  accuracy in `[0, 1]`. Pass `objective="mul"` for the 3CosMul objective (Levy &
+  Goldberg 2014), which is usually stronger on analogies than the default
+  `objective="add"` (3CosAdd).
 
 ## `count_pairs` parameters
 
@@ -204,8 +209,12 @@ count_pairs(corpus, window=2, dynamic_window="deter", decay_rate=0.25,
   so window spans close over the gaps rather than counting through them.
 - **`subsample`** (default `"deter"`): frequent-word subsampling. `None` disables
   it; `"deter"` scales pair counts by the word2vec keep factor deterministically;
-  `"prob"` drops tokens at random with that keep probability (the two agree in
-  expectation).
+  `"prob"` drops tokens at random with that keep probability but keeps the slot,
+  so the window spans but does not reach past a dropped token (the paper's *clean*
+  variant); `"dirty"` removes dropped tokens entirely so the window closes up and
+  reaches further (the variant Levy, Goldberg & Dagan 2015 report). `"deter"` and
+  `"prob"` agree in expectation; `"dirty"` genuinely differs — it creates
+  co-occurrences across a dropped frequent word that the others cannot.
 - **`subsample_factor`** (default `1e-5`): word2vec's `sample` parameter. A word is
   subsampled once its count exceeds `subsample_factor * total_tokens`; the
   threshold is on the token-count scale, so a value from a word2vec/hyperwords

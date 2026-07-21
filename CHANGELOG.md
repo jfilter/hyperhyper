@@ -5,6 +5,28 @@
 Modernization of the package for current Python and dependency versions.
 Everything below is user-visible; several items change numeric results.
 
+### Added
+
+Three hyperparameters from Levy, Goldberg & Dagan (2015) that were missing on
+the count side. All default to the previous behaviour, so existing results and
+caches for the old settings are unchanged.
+
+-   **3CosMul analogy objective.** `bunch.eval_analogy(embd, objective="mul")`
+    and `most_similar_vectors(..., objective="mul")` on both `PPMIEmbedding` and
+    `SVDEmbedding` implement the multiplicative objective from Levy & Goldberg
+    (2014), `∏ cos(d, positive) / (∏ cos(d, negative) + 0.01)`, matching the
+    `hyperwords` reference (including its dense-cosine remap to `[0, 1]`, which
+    PPMI's already-non-negative cosines skip). Default stays `objective="add"`.
+-   **`w+c` representation for SVD.** `bunch.svd(add_context=True)` builds the
+    embedding as `U·Σ^eig + V·Σ^eig` instead of `U·Σ^eig` alone — the paper's
+    context-vector-addition post-processing. `calc_svd` now retains the right
+    singular vectors (it discarded them before). Default `add_context=False`;
+    not offered for PPMI, which the paper excludes.
+-   **Dirty subsampling.** `subsample="dirty"` removes subsampled tokens *before*
+    building windows, so the window closes up and reaches further — the variant
+    the paper actually reports. The existing `subsample="prob"` is the *clean*
+    variant (the slot is kept) and is unchanged.
+
 ### Breaking
 
 -   **Python `>=3.10,<3.14` is now required.** Python 3.6-3.9 are dropped. 3.14 is

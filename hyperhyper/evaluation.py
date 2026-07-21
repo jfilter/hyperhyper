@@ -168,7 +168,16 @@ def eval_similarity(vectors, token2id, preproc_fun, lang="en"):
 
 
 # analogies
-def eval_analogies(vectors, token2id, preproc_fun, lang="en"):
+def eval_analogies(vectors, token2id, preproc_fun, lang="en", objective="add"):
+    """
+    Evaluate word-analogy accuracy on the bundled datasets.
+
+    ``objective`` selects the analogy recovery objective handed to
+    ``most_similar_vectors``: ``"add"`` (3CosAdd, the default -- unchanged
+    behaviour and the metric the recorded results were computed with) or
+    ``"mul"`` (3CosMul, Levy & Goldberg 2014). The exclusion set, OOV handling
+    and unanswerable-row skipping are identical for both objectives.
+    """
     line_counts, full_results = [], []
 
     for data in read_test_data(lang, "analogy"):
@@ -200,7 +209,7 @@ def eval_analogies(vectors, token2id, preproc_fun, lang="en"):
             if b_ in exclusions:
                 continue
             guesses = vectors.most_similar_vectors(
-                [a_, b], [a], topn=len(exclusions) + 1
+                [a_, b], [a], topn=len(exclusions) + 1, objective=objective
             )
             guesses = [int(idx) for idx, _ in guesses if int(idx) not in exclusions]
             result = 1 if guesses and guesses[0] == b_ else 0

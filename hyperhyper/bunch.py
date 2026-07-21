@@ -23,9 +23,7 @@ from .corpus import Corpus
 from .experiment import record, results_from_db
 from .utils import (
     delete_folder,
-    load_arrays,
     load_matrix,
-    save_arrays,
     save_matrix,
 )
 
@@ -350,10 +348,28 @@ class Bunch:
         return embd
 
     def svd_matrix(
-        self, impl, impl_args=None, dim=500, neg=1, cds=0.75, pair_args=None, **kwargs
+        self,
+        impl,
+        impl_args=None,
+        dim=500,
+        neg=1,
+        cds=0.75,
+        add_context=False,
+        pair_args=None,
+        **kwargs,
     ):
         """
         Do the actual SVD computation.
+
+        Returns ``(ut, s, vt)``: the left singular vectors, the singular values
+        and (only when ``add_context``) the right singular vectors ``Vᵀ`` needed
+        for the ``w+c`` representation; ``vt`` is ``None`` otherwise.
+
+        ``add_context`` participates in the cache key, so the ``w+c`` factorization
+        (which persists three arrays) and the word-only one (two arrays) never
+        share a cache entry. The word-only file keeps the exact ``a1``/``a2``
+        layout the previous ``save_arrays`` wrote, so pre-existing caches still
+        load.
         """
         if impl not in VALID_IMPLS:
             raise ValueError(f"impl must be one of {sorted(VALID_IMPLS)}, got {impl!r}")
@@ -369,6 +385,7 @@ class Bunch:
                 "neg": neg,
                 "cds": cds,
                 "dim": dim,
+                "add_context": add_context,
                 # `**kwargs` reaches `count_pairs` too, so it has to be in the key
                 "pair_args": self._effective_pair_args(pair_args, **kwargs),
             },
@@ -377,7 +394,9 @@ class Bunch:
         if svd_path.is_file():
             try:
                 logger.info("retrieved already saved svd")
-                return load_arrays(svd_path)
+                loader = np.load(str(svd_path))
+                vt = loader["a3"] if "a3" in loader.files else None
+                return loader["a1"], loader["a2"], vt
             except Exception as e:
                 logger.info("creating new svd, error while loading files: %s", e)
 
@@ -386,15 +405,20 @@ class Bunch:
         m = pmi.PPMIEmbedding(m, neg=neg, normalize=False)
 
         start = timer()
-        ut, s = svd.calc_svd(m, dim, impl, impl_args)
+        ut, s, vt = svd.calc_svd(m, dim, impl, impl_args)
         end = timer()
         logger.info("svd took %s minutes", round((end - start) / 60, 2))
 
         svd_path.parent.mkdir(parents=True, exist_ok=True)
-        save_arrays(svd_path, ut, s)
+        # `a1`/`a2` match the historical `save_arrays` layout; `a3` (the context
+        # vectors) is only written -- and only needed -- for `w+c`.
+        arrays = {"a1": ut, "a2": s}
+        if add_context:
+            arrays["a3"] = vt
+        np.savez_compressed(str(svd_path), **arrays)
         logger.info("svd arrays saved")
 
-        return ut, s
+        return ut, s, (vt if add_context else None)
 
     @record
     def svd(
@@ -405,6 +429,7 @@ class Bunch:
         cds=0.75,
         impl="scipy",
         impl_args=None,
+        add_context=False,
         pair_args=None,
         keyed_vectors=False,
         evaluate=True,
@@ -412,19 +437,25 @@ class Bunch:
     ):
         """
         Gets and SVD embedding.
+
+        ``add_context=True`` builds the ``w+c`` representation of Levy & Goldberg
+        (2015) -- the context vectors are added to the word vectors. It defaults
+        off, so the standard word-only embedding (and every recorded result) is
+        unchanged.
         """
         impl_args = {} if impl_args is None else impl_args
         pair_args = {} if pair_args is None else pair_args
-        ut, s = self.svd_matrix(
+        ut, s, vt = self.svd_matrix(
             impl=impl,
             impl_args=impl_args,
             dim=dim,
             neg=neg,
             cds=cds,
+            add_context=add_context,
             pair_args=pair_args,
             **kwargs,
         )
-        embedding = svd.SVDEmbedding(ut, s, eig=eig)
+        embedding = svd.SVDEmbedding(ut, s, eig=eig, vt=vt, add_context=add_context)
 
         if evaluate:
             eval_results = self.eval_sim(embedding)

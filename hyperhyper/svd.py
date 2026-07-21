@@ -20,14 +20,22 @@ except ImportError:
     logger.info("no sklearn")
 
 
+# Epsilon added to the 3CosMul denominator. Taken verbatim from Levy's
+# ``hyperwords/analogy_eval.py`` (``guess``), which computes
+# ``mul_sim = sa_ * sb * np.reciprocal(sa + 0.01)`` -- i.e. 0.01, *not* the
+# 0.001 that some descriptions of 3CosMul quote.
+COSMUL_EPS = 0.01
+
+
 def calc_svd(matrix, dim, impl, impl_args):
     """
     Factorize a (P)PMI matrix with truncated SVD, keeping ``dim`` components.
 
     Computes the rank-``dim`` truncated SVD ``M ≈ U · diag(s) · Vᵀ`` and returns
-    the left singular vectors ``U`` together with the singular values ``s``.
-    ``SVDEmbedding`` combines them (``U · diag(s)^eig``) into dense word vectors;
-    this is the factorization step of Levy & Goldberg (2015).
+    the left singular vectors ``U``, the singular values ``s`` and the right
+    singular vectors ``Vᵀ``. ``SVDEmbedding`` combines them (``U · diag(s)^eig``,
+    optionally plus ``V · diag(s)^eig`` for the ``w+c`` representation) into
+    dense word vectors; this is the factorization step of Levy & Goldberg (2015).
 
     The singular values are always returned in descending order (``svds`` yields
     them ascending, so they are reordered to match ``gensim``/``scikit``).
@@ -47,8 +55,11 @@ def calc_svd(matrix, dim, impl, impl_args):
     over-large request; a full-rank ``dim < rank`` request is untouched.
 
     Returns:
-        Tuple ``(ut, s)``: left singular vectors (up to ``dim`` columns) and the
-        matching singular values in descending order.
+        Tuple ``(ut, s, vt)``: left singular vectors (up to ``dim`` columns), the
+        matching singular values in descending order, and the right singular
+        vectors ``Vᵀ`` (up to ``dim`` rows). ``gensim``'s ``stochastic_svd`` does
+        not return ``Vᵀ``, so for that backend it is reconstructed from the
+        identity ``Vᵀ = diag(s)⁻¹ · Uᵀ · M`` (see ``_right_vectors_from_left``).
 
     Raises:
         ImportError: if ``impl="scikit"`` but scikit-learn is not installed.
@@ -93,32 +104,53 @@ def calc_svd(matrix, dim, impl, impl_args):
     dim = min(dim, max_dim)
 
     if impl == "scipy":
-        ut, s, _ = svds(matrix.m, k=dim, **impl_args)
+        ut, s, vt = svds(matrix.m, k=dim, **impl_args)
         # `svds` returns the singular values ascending, `gensim`/`scikit` return
         # them descending. SVDEmbedding is insensitive to the order (it scales
         # columns and normalizes rows), but anything slicing `ut[:, :k]`, reading
         # `s[0]` as the leading component or plotting the spectrum is not -- and
-        # `bunch.svd_matrix` persists these arrays to disk.
+        # `bunch.svd_matrix` persists these arrays to disk. The right vectors
+        # `vt` have to follow the same reordering as `ut`/`s`, row for row.
         order = np.argsort(s)[::-1]
-        ut, s = ut[:, order], s[order]
+        ut, s, vt = ut[:, order], s[order], vt[order, :]
     # randomized (but fast) truncated SVD
     elif impl == "gensim":
         # better default arguments
         args = {"power_iters": 5, "extra_dims": 10, **impl_args}
         ut, s = stochastic_svd(matrix.m, dim, matrix.m.shape[0], **args)
+        # `stochastic_svd` returns only `(U, s)`; recover the right singular
+        # vectors so the `w+c` representation works on this backend too.
+        vt = _right_vectors_from_left(ut, s, matrix.m)
     elif impl == "scikit":
         if randomized_svd is None:
             raise ImportError(
                 "impl='scikit' requires scikit-learn: pip install 'hyperhyper[full]'"
             )
-        ut, s, _ = randomized_svd(matrix.m, dim, **impl_args)
+        ut, s, vt = randomized_svd(matrix.m, dim, **impl_args)
     else:
         raise ValueError(f"unknown SVD impl: {impl!r}")
 
-    return _drop_negligible_components(ut, s, matrix.m)
+    return _drop_negligible_components(ut, s, vt, matrix.m)
 
 
-def _drop_negligible_components(ut, s, m):
+def _right_vectors_from_left(ut, s, m):
+    """
+    Recover the right singular vectors ``Vᵀ`` from ``U``, ``s`` and ``M``.
+
+    ``gensim``'s ``stochastic_svd`` returns only the left factors ``(U, s)``. For
+    a truncated SVD ``M = U · diag(s) · Vᵀ`` the identity ``Uᵀ · M = diag(s) · Vᵀ``
+    holds, so ``Vᵀ = diag(s)⁻¹ · Uᵀ · M`` reconstructs the right vectors that are
+    consistent with the ``U``/``s`` gensim returned. Components with a zero
+    singular value (numerical null space, dropped downstream anyway) map to a
+    zero row rather than a division by zero.
+    """
+    # `M.T · U` is `(n_context x dim)` and dense; transpose to the `Vᵀ` layout.
+    sv_t = np.asarray(m.T.dot(ut)).T  # == diag(s) · Vᵀ, shape (dim, n_context)
+    inv_s = np.divide(1.0, s, out=np.zeros_like(s), where=s > 0)
+    return (inv_s[:, None] * sv_t).astype(ut.dtype, copy=False)
+
+
+def _drop_negligible_components(ut, s, vt, m):
     """
     Discard singular vectors whose singular value is numerical noise.
 
@@ -140,6 +172,10 @@ def _drop_negligible_components(ut, s, m):
     own precision (float32 for a PPMI matrix), which is where the ~1e-6 noise
     floor actually comes from. For a full-rank ``dim < rank`` request no column
     is negligible and the arrays are returned bit-unchanged.
+
+    The right singular vectors ``vt`` (rows indexed by component) are truncated
+    to exactly the same kept set, so ``U``, ``s`` and ``Vᵀ`` always describe the
+    same subspace -- the ``w+c`` representation depends on it.
     """
     if s.size == 0:
         raise ValueError("SVD returned no components")
@@ -154,8 +190,8 @@ def _drop_negligible_components(ut, s, m):
         )
     if keep.all():
         # full rank at this dim -- hand back the exact arrays, untouched
-        return ut, s
-    return ut[:, keep], s[keep]
+        return ut, s, vt
+    return ut[:, keep], s[keep], vt[keep, :]
 
 
 class SVDEmbedding:
@@ -177,24 +213,56 @@ class SVDEmbedding:
         * ``eig = 1.0`` -- full weighting ``U · diag(s)``, closest to the
           classic LSA representation.
 
+    With ``add_context=True`` the ``w+c`` representation of Levy & Goldberg
+    (2015) is built instead: the context vectors are added to the word vectors,
+
+        W = U · diag(s) ** eig + V · diag(s) ** eig
+
+    (the sum is normalized afterwards, if ``normalize``). This requires the right
+    singular vectors ``vt`` (``= Vᵀ``). The paper applies ``w+c`` only to dense
+    SVD embeddings, never to PPMI.
+
     Args:
         ut: left singular vectors (``dim`` columns), one row per word.
         s: singular values.
         normalize (bool): if True, L2-normalize the rows so that dot products
             are cosine similarities.
         eig (float): exponent applied to the singular values before weighting.
+        vt: right singular vectors ``Vᵀ`` (``dim`` rows), needed only for
+            ``add_context``.
+        add_context (bool): if True, add the context vectors ``V · diag(s)^eig``
+            to the word vectors (the ``w+c`` representation).
     """
 
-    def __init__(self, ut, s, normalize=True, eig=0.0):
-        if eig == 0.0:
-            self.m = ut
-        elif eig == 1.0:
-            self.m = s * ut
-        else:
-            self.m = np.power(s, eig) * ut
+    def __init__(self, ut, s, normalize=True, eig=0.0, vt=None, add_context=False):
+        self.m = self._scale(ut, s, eig)
+        if add_context:
+            if vt is None:
+                raise ValueError(
+                    "add_context=True needs the context vectors `vt`; obtain "
+                    "them from calc_svd (which now returns `(ut, s, vt)`) or "
+                    "Bunch.svd(add_context=True)"
+                )
+            # `vt` is (dim x n_context); its transpose holds one context vector
+            # per row, aligned with the word rows of `ut`. w+c = W + C.
+            self.m = self.m + self._scale(vt.T, s, eig)
 
         if normalize:
             self.normalize()
+
+    @staticmethod
+    def _scale(u, s, eig):
+        """
+        Weight singular vectors ``u`` (rows) by ``diag(s) ** eig``.
+
+        ``eig == 0.0`` returns ``u`` untouched (the array is not copied, matching
+        the original behaviour), ``eig == 1.0`` avoids the ``pow``.
+        """
+        if eig == 0.0:
+            return u
+        if eig == 1.0:
+            return s * u
+        return np.power(s, eig) * u
 
     def normalize(self):
         """
@@ -233,28 +301,75 @@ class SVDEmbedding:
         best = heapq.nlargest(n, zip(scores, range(len(scores)), strict=True))
         return [(int(idx), float(score)) for score, idx in best]
 
-    def most_similar_vectors(self, positives, negatives, topn=10):
+    def most_similar_vectors(self, positives, negatives, topn=10, objective="add"):
         """
-        Analogy-style query: rank words by similarity to the mean of the
-        ``positives`` vectors minus the ``negatives`` vectors.
+        Analogy-style query over the ``positives`` and ``negatives`` word indices.
 
-        The (unit-normalized) mean of the selected word vectors is compared
-        against every row; useful for "king - man + woman" style queries.
+        With ``objective="add"`` (the default, 3CosAdd) words are ranked by
+        similarity to the unit-normalized mean of the ``positives`` vectors minus
+        the ``negatives`` vectors -- the classic "king - man + woman" arithmetic.
+
+        With ``objective="mul"`` the 3CosMul objective of Levy & Goldberg (2014)
+        is used instead (see ``_most_similar_mul``); it is often materially better
+        on analogies. Both share the ``(index, score)`` return convention.
+
         Assumes the vectors have been normalized.
 
         Args:
             positives: word indices to add.
             negatives: word indices to subtract.
             topn (int): number of results to return.
+            objective (str): ``"add"`` (3CosAdd) or ``"mul"`` (3CosMul).
 
         Returns:
             List of ``(index, score)`` tuples sorted by descending score --
             the same order and shape as ``most_similar``.
         """
+        if objective == "mul":
+            return self._most_similar_mul(positives, negatives, topn)
+        if objective != "add":
+            raise ValueError(
+                f"objective must be 'add' (3CosAdd) or 'mul' (3CosMul), "
+                f"got {objective!r}"
+            )
         mean = [self.represent(x) for x in positives] + [
             -1 * self.represent(x) for x in negatives
         ]
         mean = matutils.unitvec(np.array(mean).mean(axis=0)).astype(np.float32)
         dists = self.m.dot(mean)
+        best = matutils.argsort(dists, topn=topn, reverse=True)
+        return [(best_idx, float(dists[best_idx])) for best_idx in best]
+
+    def _most_similar_mul(self, positives, negatives, topn):
+        """
+        3CosMul (Levy & Goldberg 2014), for dense SVD vectors.
+
+        Ranks each candidate ``d`` by the multiplicative combination
+
+            (∏ cos(d, p) for p in positives) / (∏ cos(d, n) for n in negatives + ε)
+
+        with ``ε = COSMUL_EPS``. This is exactly Levy's ``hyperwords``
+        ``analogy_eval.py`` scoring: for the analogy ``a:a_ :: b:?`` it passes
+        ``positives=[a_, b]``, ``negatives=[a]`` and computes
+        ``sa_ * sb * reciprocal(sa + 0.01)``.
+
+        hyperwords maps *dense* cosine similarities from ``[-1, 1]`` onto
+        ``[0, 1]`` via ``(cos + 1) / 2`` before multiplying (its ``else`` branch
+        in ``prepare_similarities``), so that a single strongly negative cosine
+        cannot dominate or flip the sign of the product. That remapping is
+        reproduced here; the PPMI variant does not remap, matching hyperwords.
+        """
+
+        def sims(idx):
+            return (self.m.dot(self.represent(idx)) + 1.0) / 2.0
+
+        dists = np.ones(self.m.shape[0], dtype=np.float64)
+        for x in positives:
+            dists = dists * sims(x)
+        denom = np.ones(self.m.shape[0], dtype=np.float64)
+        for x in negatives:
+            denom = denom * sims(x)
+        dists = dists / (denom + COSMUL_EPS)
+
         best = matutils.argsort(dists, topn=topn, reverse=True)
         return [(best_idx, float(dists[best_idx])) for best_idx in best]

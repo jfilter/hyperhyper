@@ -229,6 +229,52 @@ def test_eval_analogy_skips_out_of_vocabulary_lines(
     assert result["score"] == pytest.approx(1.0)
 
 
+# 3CosMul objective (FEATURE 1)
+
+# A second toy space, laid out so 3CosAdd and 3CosMul return *different*
+# answers for the analogy `athens:greece :: baghdad:?` (columns `a a_ b b_`):
+#   greece (a_) = e1, baghdad (b) = e2, athens (a) = e3, mutually orthogonal.
+#   cairo (d1) leans on one positive (cos=0.95, 0.10); iraq (d2) is balanced
+#   (0.50, 0.50). 3CosAdd sums (1.05 > 1.00) and answers `cairo` (wrong);
+#   3CosMul multiplies the [0,1]-mapped cosines and answers `iraq` (correct).
+MUL_TOKEN2ID = {"athens": 0, "greece": 1, "baghdad": 2, "cairo": 3, "iraq": 4}
+MUL_VECTORS = np.array(
+    [
+        [0.0, 0.0, 1.0, 0.0],  # athens  (a)
+        [1.0, 0.0, 0.0, 0.0],  # greece  (a_)
+        [0.0, 1.0, 0.0, 0.0],  # baghdad (b)
+        [0.95, 0.10, 0.0, 0.29580399],  # cairo (d1)
+        [0.50, 0.50, 0.0, 0.70710678],  # iraq  (d2)
+    ]
+)
+
+
+@pytest.fixture()
+def cosmul_embedding():
+    return SVDEmbedding(MUL_VECTORS, np.ones(4), eig=0.0)
+
+
+def test_eval_analogy_objective_mul_differs_from_add(
+    tmp_path, cosmul_embedding, use_dataset
+):
+    use_dataset(write_dataset(tmp_path, "cosmul", ["athens greece baghdad iraq"]))
+
+    add = evaluation.eval_analogies(
+        cosmul_embedding, MUL_TOKEN2ID, tokenize_texts, objective="add"
+    )
+    mul = evaluation.eval_analogies(
+        cosmul_embedding, MUL_TOKEN2ID, tokenize_texts, objective="mul"
+    )
+
+    # 3CosAdd gets this analogy wrong, 3CosMul gets it right
+    assert add["micro"] == pytest.approx(0.0)
+    assert mul["micro"] == pytest.approx(1.0)
+
+    # the default objective is 3CosAdd, so omitting it is unchanged behaviour
+    default = evaluation.eval_analogies(cosmul_embedding, MUL_TOKEN2ID, tokenize_texts)
+    assert default["micro"] == pytest.approx(add["micro"])
+
+
 # word similarity
 
 

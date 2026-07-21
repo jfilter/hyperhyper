@@ -1,6 +1,7 @@
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 
 import hyperhyper
@@ -46,6 +47,71 @@ def test_bunch_svd(corpus, bunch_path):
             svd_matrix.similarity(token_idx, english_idx)
         )
         assert svd_matrix.similarity(english_idx, token_idx) == pytest.approx(sim)
+
+
+def test_svd_add_context_participates_in_cache_key(corpus, bunch_path):
+    """
+    FEATURE 2: `add_context` must move the svd cache path, so the `w+c` and the
+    word-only factorization never share a cache entry -- and the default
+    (`add_context=False`) must stay a distinct, stable key.
+    """
+    bunch = hyperhyper.Bunch(bunch_path, corpus, force_overwrite=True)
+    base = {
+        "impl": "scipy",
+        "impl_args": {},
+        "neg": 1,
+        "cds": 0.75,
+        "dim": 2,
+        "pair_args": bunch._effective_pair_args(),
+    }
+    off = bunch.dict_to_path("svd", {**base, "add_context": False})
+    on = bunch.dict_to_path("svd", {**base, "add_context": True})
+    assert off != on
+
+
+def test_svd_wplusc_end_to_end_and_composes_with_cosmul(corpus, bunch_path):
+    """
+    FEATURE 2 through the public API, composing with FEATURE 1.
+
+    `add_context=True` builds a genuinely different representation than the
+    word-only default, lands in its own cache file, and 3CosMul evaluates on it.
+    """
+    bunch = hyperhyper.Bunch(bunch_path, corpus, force_overwrite=True)
+
+    word_only, _ = bunch.svd(dim=4)
+    wplusc, _ = bunch.svd(dim=4, add_context=True)
+
+    # two distinct cache entries on disk
+    svd_files = list((bunch_path / "svd").iterdir())
+    assert len(svd_files) == 2
+
+    # same shape, but the context vectors really were folded in
+    assert wplusc.m.shape == word_only.m.shape
+    assert not np.allclose(wplusc.m, word_only.m)
+
+    # 3CosMul (FEATURE 1) composes with the w+c representation (FEATURE 2)
+    english_idx = corpus.vocab.token2id["english"]
+    wikipedia_idx = corpus.vocab.token2id["wikipedia"]
+    guesses = wplusc.most_similar_vectors(
+        [english_idx], [wikipedia_idx], topn=3, objective="mul"
+    )
+    assert len(guesses) == 3
+    assert all(0 <= int(idx) < wplusc.m.shape[0] for idx, _ in guesses)
+
+
+def test_svd_default_path_unchanged_by_add_context_feature(corpus, bunch_path):
+    """
+    Guard that the word-only svd is byte-for-byte the previous behaviour: the
+    cached arrays are still the two-array `a1`/`a2` layout, with no context
+    vectors written.
+    """
+    bunch = hyperhyper.Bunch(bunch_path, corpus, force_overwrite=True)
+    _ut, _s, vt = bunch.svd_matrix(impl="scipy", dim=2)
+    assert vt is None
+
+    (svd_file,) = list((bunch_path / "svd").iterdir())
+    loaded = np.load(str(svd_file))
+    assert sorted(loaded.files) == ["a1", "a2"]  # no a3 (context) array
 
 
 def test_bunch_svd_invalid_impl(corpus, bunch_path):

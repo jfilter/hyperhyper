@@ -30,7 +30,7 @@ def test_singular_values_are_descending(impl):
     component or plotting the spectrum got the spectrum backwards, and
     `bunch.svd_matrix` persists these arrays to disk.
     """
-    _, s = calc_svd(wrap(DIAG), 3, impl, {})
+    _, s, _ = calc_svd(wrap(DIAG), 3, impl, {})
     assert np.allclose(s, [6.0, 5.0, 4.0])
 
 
@@ -44,7 +44,7 @@ def test_singular_vectors_follow_the_values(impl):
     is the unit vector `e_i` (up to sign), so the leading column has to be
     +/- e_0, the next +/- e_1, and so on.
     """
-    ut, _ = calc_svd(wrap(DIAG), 3, impl, {})
+    ut, _, _ = calc_svd(wrap(DIAG), 3, impl, {})
     for i in range(3):
         expected = np.zeros(6)
         expected[i] = 1.0
@@ -69,7 +69,7 @@ def _rank_deficient(n=40, rank=5, seed=0):
 
 
 def _neighbours(impl, matrix, dim, query=0, n=6):
-    ut, s = calc_svd(wrap(matrix), dim, impl, {})
+    ut, s, _ = calc_svd(wrap(matrix), dim, impl, {})
     return [idx for idx, _ in SVDEmbedding(ut, s, eig=0.0).most_similar(query, n=n)]
 
 
@@ -106,7 +106,7 @@ def test_dim_over_matrix_rank_is_truncated_consistently(impl):
     BUG 1/2: every backend must return exactly the number of *significant*
     components (5), not `dim` columns padded with null-space noise.
     """
-    ut, s = calc_svd(wrap(_rank_deficient()), 15, impl, {})
+    ut, s, _ = calc_svd(wrap(_rank_deficient()), 15, impl, {})
     assert ut.shape[1] == 5
     assert s.shape == (5,)
 
@@ -120,7 +120,7 @@ def test_dim_at_or_above_min_shape_is_clamped(impl):
     (and then drop negligibles), so all three agree.
     """
     full_rank = np.diag(np.arange(1, 11)).astype(np.float32)  # 10x10, rank 10
-    ut, s = calc_svd(wrap(full_rank), 10, impl, {})
+    ut, s, _ = calc_svd(wrap(full_rank), 10, impl, {})
     assert ut.shape[1] == 9  # clamped from 10 to min(shape) - 1
     assert s.shape == (9,)
 
@@ -146,7 +146,7 @@ def test_full_rank_result_is_unchanged(impl):
     rng = np.random.default_rng(1)
     matrix = rng.random((30, 30)).astype(np.float32)
     reference = np.linalg.svd(matrix, compute_uv=False)[:5]
-    ut, s = calc_svd(wrap(matrix), 5, impl, {})
+    ut, s, _ = calc_svd(wrap(matrix), 5, impl, {})
     assert ut.shape[1] == 5
     assert np.allclose(np.sort(s)[::-1], reference, atol=1e-4)
 
@@ -154,7 +154,7 @@ def test_full_rank_result_is_unchanged(impl):
 def _embedding():
     rng = np.random.default_rng(0)
     dense = rng.random((20, 20)).astype(np.float32)
-    ut, s = calc_svd(wrap(dense), 5, "scikit", {})
+    ut, s, _ = calc_svd(wrap(dense), 5, "scikit", {})
     return SVDEmbedding(ut, s)
 
 
@@ -191,4 +191,142 @@ def test_svd_most_similar_agrees_with_most_similar_vectors():
 def test_svd_most_similar_is_sorted_descending():
     embd = _embedding()
     scores = [score for _, score in embd.most_similar(7, n=10)]
+    assert scores == sorted(scores, reverse=True)
+
+
+# right singular vectors + w+c (FEATURE 2)
+
+
+@pytest.mark.parametrize("impl", IMPLS)
+def test_calc_svd_returns_right_vectors(impl):
+    """
+    `calc_svd` now hands back `(ut, s, vt)`. For every backend -- including
+    gensim, whose `stochastic_svd` returns only `(U, s)` so `vt` is reconstructed
+    from `Vᵀ = diag(s)⁻¹·Uᵀ·M` -- the triplet must reconstruct the rank-`dim`
+    truncation of the input.
+    """
+    ut, s, vt = calc_svd(wrap(DIAG), 3, impl, {})
+    assert vt.shape == (3, 6)
+    approx = ut @ np.diag(s) @ vt
+    expected = np.zeros((6, 6))
+    expected[0, 0], expected[1, 1], expected[2, 2] = 6.0, 5.0, 4.0
+    assert np.allclose(approx, expected, atol=1e-3)
+
+
+@pytest.mark.parametrize("impl", IMPLS)
+def test_drop_negligible_truncates_vt_consistently(impl):
+    """
+    The negligible-component drop has to trim `vt`'s rows to the same kept set as
+    `ut`'s columns and `s`, or `w+c` would sum mismatched subspaces.
+    """
+    ut, s, vt = calc_svd(wrap(_rank_deficient()), 15, impl, {})
+    assert ut.shape[1] == s.shape[0] == vt.shape[0] == 5
+
+
+def test_wplusc_adds_context_vectors():
+    """
+    `add_context=True` builds `w+c = U·S^eig + V·S^eig` (then normalizes).
+
+    Uses an *asymmetric* square matrix so `U != V` and the sum genuinely differs
+    from the word-only vectors, and checks the result against the by-hand
+    construction.
+    """
+    rng = np.random.default_rng(3)
+    dense = rng.random((12, 12)).astype(np.float32)  # asymmetric -> U != V
+    ut, s, vt = calc_svd(wrap(dense), 5, "scipy", {})
+
+    word_only = SVDEmbedding(ut, s, eig=0.5)
+    wplusc = SVDEmbedding(ut, s, eig=0.5, vt=vt, add_context=True)
+
+    assert wplusc.m.shape == word_only.m.shape == (12, 5)
+    # the context vectors really were added: w+c differs from word-only
+    assert not np.allclose(wplusc.m, word_only.m)
+
+    # ... and equals U·S^0.5 + V·S^0.5, normalized, built by hand
+    manual = np.power(s, 0.5) * ut + np.power(s, 0.5) * vt.T
+    manual = manual / np.linalg.norm(manual, axis=1, keepdims=True)
+    assert np.allclose(wplusc.m, manual, atol=1e-5)
+
+
+def test_wplusc_requires_context_vectors():
+    ut, s, _ = calc_svd(wrap(DIAG), 3, "scipy", {})
+    with pytest.raises(ValueError, match="vt"):
+        SVDEmbedding(ut, s, add_context=True)
+
+
+def test_word_only_embedding_is_unchanged_by_the_new_signature():
+    """
+    The default `add_context=False` path must build the exact same matrix as
+    before the feature was added (this is what keeps recorded results stable).
+    """
+    ut, s, vt = calc_svd(wrap(DIAG), 4, "scipy", {})
+    for eig in (0.0, 0.5, 1.0):
+        old_style = SVDEmbedding(ut, s, eig=eig)
+        new_style = SVDEmbedding(ut, s, eig=eig, vt=vt, add_context=False)
+        assert np.allclose(old_style.m, new_style.m)
+
+
+# 3CosMul (FEATURE 1)
+
+
+def _cosmul_toy():
+    """
+    Five unit vectors laid out so 3CosAdd and 3CosMul disagree on the analogy
+    ``a:a_ :: b:?`` (positives ``[a_, b]``, negative ``[a]``).
+
+    ``a_ = e1``, ``b = e2``, ``a = e3`` (mutually orthogonal), and two candidate
+    answers:
+
+      * ``d1`` leans hard on one positive: cos(·,a_)=0.95, cos(·,b)=0.10
+      * ``d2`` is balanced:                cos(·,a_)=0.50, cos(·,b)=0.50
+
+    both orthogonal to ``a``. 3CosAdd sums the similarities (0.95+0.10=1.05 >
+    0.50+0.50=1.00) and picks ``d1``; 3CosMul, after mapping cosines to [0,1],
+    multiplies them and rewards the balanced ``d2``. So the two objectives return
+    different answers -- computable by hand.
+    """
+    vectors = np.array(
+        [
+            [1.0, 0.0, 0.0, 0.0],  # a_  index 0
+            [0.0, 1.0, 0.0, 0.0],  # b   index 1
+            [0.0, 0.0, 1.0, 0.0],  # a   index 2
+            [0.95, 0.10, 0.0, 0.29580399],  # d1  index 3
+            [0.50, 0.50, 0.0, 0.70710678],  # d2  index 4
+        ]
+    )
+    return SVDEmbedding(vectors, np.ones(4), eig=0.0)
+
+
+def test_svd_cosmul_differs_from_cosadd():
+    embd = _cosmul_toy()
+    exclusions = {0, 1, 2}
+
+    def first(objective):
+        guesses = embd.most_similar_vectors([0, 1], [2], topn=4, objective=objective)
+        return next(int(i) for i, _ in guesses if int(i) not in exclusions)
+
+    assert first("add") == 3  # 3CosAdd -> d1 (dominant single similarity)
+    assert first("mul") == 4  # 3CosMul -> d2 (balanced)
+
+
+def test_most_similar_vectors_rejects_unknown_objective():
+    embd = _cosmul_toy()
+    with pytest.raises(ValueError, match="objective"):
+        embd.most_similar_vectors([0], [1], objective="nonsense")
+
+
+def test_cosmul_composes_with_wplusc():
+    """
+    The two features compose: 3CosMul runs on a `w+c` SVD embedding and returns a
+    valid, correctly shaped ranking.
+    """
+    rng = np.random.default_rng(5)
+    dense = rng.random((15, 15)).astype(np.float32)
+    ut, s, vt = calc_svd(wrap(dense), 6, "scipy", {})
+    wplusc = SVDEmbedding(ut, s, eig=0.0, vt=vt, add_context=True)
+
+    guesses = wplusc.most_similar_vectors([1, 2], [0], topn=4, objective="mul")
+    assert len(guesses) == 4
+    assert all(0 <= int(i) < wplusc.m.shape[0] for i, _ in guesses)
+    scores = [sc for _, sc in guesses]
     assert scores == sorted(scores, reverse=True)

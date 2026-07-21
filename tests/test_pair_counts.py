@@ -94,11 +94,137 @@ def test_count(corpus_on_disk):
     assert pair_c.sum() > 0
 
 
-@pytest.mark.parametrize("subsample", ["prob", "deter"])
+@pytest.mark.parametrize("subsample", ["prob", "dirty", "deter"])
 def test_count_subsample(corpus_on_disk, subsample):
     pair_c = hyperhyper.count_pairs(corpus_on_disk, subsample=subsample)
     assert pair_c.shape == (corpus_on_disk.vocab.size + 1,) * 2
     assert pair_c.nnz > 0
+
+
+@pytest.fixture()
+def frequent_word_corpus(tmp_path):
+    """
+    A corpus built to separate the clean and dirty subsampling variants.
+
+    Every "aa xx bb" sentence puts the frequent word ``xx`` between two rare
+    words that are otherwise never adjacent; the "xx xx ..." sentences inflate
+    ``xx``'s frequency so it -- and only it -- crosses the subsampling
+    threshold. With ``window=1`` the only way ``aa`` and ``bb`` can ever
+    co-occur is if the ``xx`` between them is *removed* from the sequence so the
+    window closes up, which is exactly what dirty subsampling does and clean
+    subsampling does not.
+    """
+    sents = ["aa xx bb"] * 200 + ["xx " * 10] * 200
+    corpus = hyperhyper.Corpus.from_texts(sents, preproc_func=tokenize_texts)
+    corpus.texts_to_file(tmp_path / "frequent", 50)
+    return corpus
+
+
+# `aa` and `bb` occur 200 times, `xx` 2200 times, 2600 tokens in total. With
+# this factor the threshold is 0.15 * 2600 = 390, so only `xx` (2200 > 390) is
+# subsampled while `aa`/`bb` (200 < 390) are left completely alone.
+FREQUENT_WORD_FACTOR = 0.15
+
+
+def test_only_the_frequent_word_is_subsampled(frequent_word_corpus):
+    """
+    The premise of the clean-vs-dirty test below: the fixture really does put
+    exactly one word -- the frequent ``xx`` -- above the subsampling threshold.
+    """
+    counts = frequent_word_corpus.counts
+    token2id = frequent_word_corpus.vocab.token2id
+    threshold = FREQUENT_WORD_FACTOR * sum(counts.values())
+    keep = pair_counts.subsample_keep_probabilities(counts, threshold)
+    assert set(keep) == {token2id["xx"]}
+    assert token2id["aa"] not in keep
+    assert token2id["bb"] not in keep
+
+
+def _co_occurrence(matrix, corpus, word_a, word_b):
+    """The total counted co-occurrence between two words, both directions."""
+    i = corpus.vocab.token2id[word_a]
+    j = corpus.vocab.token2id[word_b]
+    return matrix[i, j] + matrix[j, i]
+
+
+def test_dirty_subsampling_reaches_past_the_dropped_token(frequent_word_corpus):
+    """
+    The concrete difference between the clean and dirty subsampling variants
+    (Levy, Goldberg & Dagan 2015, section 3.1).
+
+    With ``window=1``, ``aa`` and ``bb`` are two positions apart in every
+    "aa xx bb" sentence, so they can only ever be counted as co-occurring if the
+    ``xx`` between them is removed and the window closes up:
+
+      * CLEAN (``subsample="prob"``) blanks ``xx`` but keeps its slot, so the
+        window still spans that slot and never reaches from ``aa`` to ``bb``.
+        Their co-occurrence is therefore exactly zero -- and it is zero
+        regardless of the seed, because even a *kept* ``xx`` sits between them.
+      * DIRTY (``subsample="dirty"``) deletes ``xx`` before the window is built,
+        so whenever ``xx`` is dropped the sentence becomes "aa bb" and the two
+        words co-occur. Their co-occurrence is therefore strictly positive.
+    """
+    common = {
+        "window": 1,
+        "dynamic_window": None,
+        "subsample_factor": FREQUENT_WORD_FACTOR,
+        "seed": 1312,
+    }
+    clean = hyperhyper.count_pairs(
+        frequent_word_corpus, subsample="prob", **common
+    ).toarray()
+    dirty = hyperhyper.count_pairs(
+        frequent_word_corpus, subsample="dirty", **common
+    ).toarray()
+
+    clean_ab = _co_occurrence(clean, frequent_word_corpus, "aa", "bb")
+    dirty_ab = _co_occurrence(dirty, frequent_word_corpus, "aa", "bb")
+
+    assert clean_ab == 0, (
+        "clean subsampling keeps the dropped word's slot, so the window must "
+        f"never reach from aa to bb -- got {clean_ab} co-occurrences"
+    )
+    assert dirty_ab > 0, (
+        "dirty subsampling removes the dropped word, so aa and bb must end up "
+        "adjacent whenever the xx between them is dropped"
+    )
+
+
+def test_dirty_subsampling_is_reproducible_for_a_fixed_seed(frequent_word_corpus):
+    """
+    Dirty subsampling draws random numbers, so -- like ``"prob"`` -- two runs at
+    the same seed must still give the bit-identical matrix, or the ``.npz`` a
+    ``Bunch`` caches stops being meaningful.
+    """
+    kwargs = {
+        "window": 2,
+        "subsample": "dirty",
+        "subsample_factor": FREQUENT_WORD_FACTOR,
+        "seed": 99,
+    }
+    first = hyperhyper.count_pairs(frequent_word_corpus, **kwargs).toarray()
+    second = hyperhyper.count_pairs(frequent_word_corpus, **kwargs).toarray()
+    assert np.array_equal(first, second)
+    assert first.sum() > 0
+
+
+def test_dirty_and_clean_subsampling_differ(frequent_word_corpus):
+    """
+    Beyond the single hand-checked cell above: over the whole matrix, dirty and
+    clean subsampling are genuinely different reductions, not two spellings of
+    one. Dirty closes windows up and so counts strictly more pairs in total.
+    """
+    common = {
+        "window": 2,
+        "subsample_factor": FREQUENT_WORD_FACTOR,
+        "seed": 7,
+    }
+    clean = hyperhyper.count_pairs(frequent_word_corpus, subsample="prob", **common)
+    dirty = hyperhyper.count_pairs(frequent_word_corpus, subsample="dirty", **common)
+    assert not np.array_equal(clean.toarray(), dirty.toarray())
+    # removing a token can only pull further words into a window, never push
+    # them out, so dirty counts at least as many pairs as clean
+    assert dirty.sum() > clean.sum()
 
 
 def test_subsample_keep_probability_falls_with_frequency():

@@ -183,3 +183,54 @@ def test_ppmi_clips_stored_zeros_without_neg():
     # the -inf used to survive normalize() and destroy the row
     normalized = PPMIEmbedding(m.copy(), normalize=True, neg=None)
     assert np.isfinite(normalized.m.toarray()).all()
+
+
+def _ppmi_with_rows(rows):
+    """
+    Build a `PPMIEmbedding` whose normalized rows are exactly ``rows``.
+
+    ``rows`` must be non-negative and unit-norm. Passing ``e^row`` as the
+    ``e^PMI`` input makes the constructor's ``log`` recover ``row``, the clip is a
+    no-op (non-negative), and normalizing an already unit-norm row leaves it
+    unchanged -- so we get an SPPMI embedding with hand-chosen cosine geometry
+    through the real constructor.
+    """
+    data = np.where(rows > 0, np.exp(rows), 0.0)
+    return PPMIEmbedding(csr_matrix(data))
+
+
+def test_ppmi_cosmul_differs_from_cosadd():
+    """
+    3CosMul (Levy & Goldberg 2014) on the sparse SPPMI representation, with the
+    answer worked out by hand.
+
+    ``a_ = e1``, ``b = e2``, ``a = e3``; candidate ``d1`` (index 3) is dominated
+    by a single positive (cos=0.95, 0.10) while ``d2`` (index 4) is balanced
+    (0.50, 0.50). 3CosAdd sums (1.05 > 1.00) and picks ``d1``; 3CosMul multiplies
+    (0.50*0.50 > 0.95*0.10) and picks ``d2``. Unlike the dense SVD case there is
+    no ``(cos+1)/2`` remap -- SPPMI cosines are already non-negative.
+    """
+    rows = np.array(
+        [
+            [1.0, 0.0, 0.0, 0.0],  # a_  index 0
+            [0.0, 1.0, 0.0, 0.0],  # b   index 1
+            [0.0, 0.0, 1.0, 0.0],  # a   index 2
+            [0.95, 0.10, 0.0, 0.29580399],  # d1  index 3
+            [0.50, 0.50, 0.0, 0.70710678],  # d2  index 4
+        ]
+    )
+    embd = _ppmi_with_rows(rows)
+    exclusions = {0, 1, 2}
+
+    def first(objective):
+        guesses = embd.most_similar_vectors([0, 1], [2], topn=4, objective=objective)
+        return next(int(i) for i, _ in guesses if int(i) not in exclusions)
+
+    assert first("add") == 3  # 3CosAdd -> d1
+    assert first("mul") == 4  # 3CosMul -> d2
+
+
+def test_ppmi_most_similar_vectors_rejects_unknown_objective():
+    embd = PPMIEmbedding(calc_pmi(csr_matrix(COUNTS), cds=1))
+    with pytest.raises(ValueError, match="objective"):
+        embd.most_similar_vectors([0], [1], objective="nonsense")
