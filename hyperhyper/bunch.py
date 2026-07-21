@@ -8,6 +8,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -20,7 +21,14 @@ from gensim.models.keyedvectors import KeyedVectors
 from . import evaluation, pair_counts, pmi, svd
 from .corpus import Corpus
 from .experiment import record, results_from_db
-from .utils import delete_folder, load_arrays, load_matrix, save_arrays, save_matrix
+from .utils import (
+    _default_workers,
+    delete_folder,
+    load_arrays,
+    load_matrix,
+    save_arrays,
+    save_matrix,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +45,42 @@ _UNSAFE_IN_NAME = re.compile(r"[^0-9A-Za-z.=+-]+")
 
 # keep file names comfortably below any file system limit
 _READABLE_PREFIX_MAX = 60
+
+# How many text chunks to aim for per worker. The chunk files are the *only*
+# unit of parallelism `count_pairs` has -- one task per chunk -- so the chunk
+# count, not the chunk size, is what decides whether the machine is used. The
+# old fixed 100k default produced 3 chunks for a 250k-sentence corpus, which on
+# a 10-core machine is a hard ceiling of 3x however many cores are present, and
+# measured out at 1.8x because the three chunks did not take equal time.
+#
+# Swept on 250k- and 500k-sentence corpora, 1 to 8 chunks per worker: the wall
+# clock is flat to within noise from 1 to 6 (5.58-5.70s at 250k) and only starts
+# to slip at 8 (6.12s), where the per-chunk overhead -- a pickled sparse matrix
+# back to the parent, plus one more step in a merge that has to stay a strict
+# left fold -- begins to show. So this is not a peak, it is the middle of a
+# plateau, chosen for the headroom rather than for a measured advantage: chunks
+# do not cost the same (the three chunks of the 250k corpus took 7.0s, 10.9s and
+# 3.8s, a 2.9x spread), and at one chunk per worker that spread lands directly
+# on the wall clock with nothing left to rebalance with.
+CHUNKS_PER_WORKER = 4
+
+# Floor: below this, a chunk stops being worth a task at all -- the round trip
+# through the pool costs more than the counting.
+MIN_TEXT_CHUNK_SIZE = 500
+
+# Ceiling: one chunk is loaded into a worker whole, so this is what bounds a
+# worker's peak memory. It is the old fixed default, kept in that role.
+MAX_TEXT_CHUNK_SIZE = 100_000
+
+
+def _auto_text_chunk_size(n_texts, workers=None):
+    """
+    Pick a chunk size that gives the pool a sensible number of chunks to spread.
+    """
+    workers = _default_workers() if workers is None else workers
+    target_chunks = max(1, workers * CHUNKS_PER_WORKER)
+    size = math.ceil(n_texts / target_chunks) if n_texts > 0 else MIN_TEXT_CHUNK_SIZE
+    return max(MIN_TEXT_CHUNK_SIZE, min(size, MAX_TEXT_CHUNK_SIZE))
 
 
 def _canonical(value):
@@ -72,9 +116,15 @@ def _readable_prefix(params):
 
 
 class Bunch:
-    def __init__(
-        self, path, corpus=None, force_overwrite=False, text_chunk_size=100000
-    ):
+    def __init__(self, path, corpus=None, force_overwrite=False, text_chunk_size=None):
+        """
+        `text_chunk_size` is how many sentences go into one on-disk text chunk.
+        It still means exactly what it always did and an explicit value is still
+        honoured verbatim; only the default has changed, from a fixed 100000 to
+        `None`, which sizes the chunks from the corpus and the core count (see
+        `_auto_text_chunk_size`). The old default was a parallelism ceiling in
+        disguise: it is a *size*, and what `count_pairs` needs is a *count*.
+        """
         self.db = None
         self.path = Path(path)
 
@@ -97,6 +147,15 @@ class Bunch:
 
         if force_overwrite and self.path.exists():
             delete_folder(self.path)
+
+        if text_chunk_size is None:
+            text_chunk_size = _auto_text_chunk_size(corpus.size)
+        elif text_chunk_size < 1:
+            raise ValueError(
+                f"text_chunk_size must be a positive number of sentences or None "
+                f"to size it automatically, got {text_chunk_size!r}"
+            )
+        logger.info("writing text chunks of %s sentences", text_chunk_size)
 
         self.path.mkdir(parents=True, exist_ok=True)
         self.corpus = corpus

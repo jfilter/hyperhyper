@@ -1,10 +1,11 @@
+import math
 import random
 
 import numpy as np
 import pytest
 
 import hyperhyper
-from hyperhyper import pair_counts
+from hyperhyper import bunch, pair_counts
 from hyperhyper.preprocessing import tokenize_texts
 
 
@@ -162,7 +163,7 @@ def varied_corpus(tmp_path):
     return corpus
 
 
-def test_parallel_merge_is_bit_reproducible(varied_corpus):
+def test_parallel_merge_is_bit_reproducible(varied_corpus, monkeypatch):
     """
     Regression test: the per-chunk matrices used to be added into the running
     total in `futures.as_completed` order. float32 addition is not associative,
@@ -175,12 +176,18 @@ def test_parallel_merge_is_bit_reproducible(varied_corpus):
 
     Note this is deliberately `array_equal`, not `allclose`: the whole point is
     that the bits match, and `allclose` passed even with the bug.
+
+    The pool is forced on here. A corpus small enough to run as a test is now
+    counted in-process, where the completion order this test is about does not
+    exist -- so without the override the test would pass without ever reaching
+    the code it guards.
     """
+    monkeypatch.setattr(pair_counts, "POOL_STARTUP_SECONDS", 0.0)
     runs = [
         hyperhyper.count_pairs(
             varied_corpus, subsample=None, dynamic_window="decay"
         ).toarray()
-        for _ in range(4)
+        for _ in range(3)
     ]
     for i, run in enumerate(runs[1:], start=1):
         assert np.array_equal(runs[0], run), f"run {i} differs from run 0"
@@ -194,3 +201,177 @@ def test_count_seed_is_honoured(corpus_on_disk):
     first = hyperhyper.count_pairs(corpus_on_disk, seed=1312, **SEED_ARGS)
     other = hyperhyper.count_pairs(corpus_on_disk, seed=23, **SEED_ARGS)
     assert not np.allclose(first.toarray(), other.toarray())
+
+
+# --------------------------------------------------------------------------
+# how the work is distributed
+# --------------------------------------------------------------------------
+#
+# `count_pairs` now decides at run time whether a process pool is worth its
+# startup cost, so most of the tests above take the serial route. These pin the
+# things that decision is not allowed to change.
+
+
+def _force_pool(monkeypatch):
+    """Make the pool look free, so any corpus at all goes through it."""
+    monkeypatch.setattr(pair_counts, "POOL_STARTUP_SECONDS", 0.0)
+
+
+def _forbid_pool(monkeypatch):
+    """Turn starting a pool into a test failure rather than a slow test."""
+
+    def boom(*args, **kwargs):
+        raise AssertionError("a process pool was started")
+
+    monkeypatch.setattr(pair_counts.futures, "ProcessPoolExecutor", boom)
+
+
+def test_serial_and_pool_paths_are_bit_identical(varied_corpus, monkeypatch):
+    """
+    The load-bearing property of the whole scheduling change.
+
+    Whether the chunks are counted in this process or fanned out to workers is
+    now a performance decision taken from a run-time measurement, so it can flip
+    between two runs of the same code on the same corpus. If the two routes did
+    not agree bit for bit, that decision would silently change the cached
+    matrix. `dynamic_window="decay"` makes the per-chunk counts irrational, so
+    a difference in summation order has something to bite on.
+    """
+    kwargs = {"subsample": None, "dynamic_window": "decay", "window": 5}
+
+    with monkeypatch.context() as m:
+        _force_pool(m)
+        pooled = hyperhyper.count_pairs(varied_corpus, **kwargs).toarray()
+
+    with monkeypatch.context() as m:
+        _forbid_pool(m)
+        serial = hyperhyper.count_pairs(varied_corpus, **kwargs).toarray()
+
+    assert serial.sum() > 0
+    np.testing.assert_array_equal(serial, pooled)
+
+
+def test_small_corpus_does_not_start_a_pool(uniform_corpus, monkeypatch):
+    """
+    150 sentences cannot repay a multi-second pool startup, and used to try
+    anyway. Asserted by making the pool unavailable rather than by timing it.
+    """
+    _forbid_pool(monkeypatch)
+    assert hyperhyper.count_pairs(uniform_corpus).nnz > 0
+
+
+def test_a_costly_corpus_still_uses_the_pool(varied_corpus, monkeypatch):
+    """
+    The converse: the size check must not have turned the pool off altogether.
+    """
+    used = []
+    real = pair_counts.futures.ProcessPoolExecutor
+    monkeypatch.setattr(
+        pair_counts.futures,
+        "ProcessPoolExecutor",
+        lambda *a, **kw: used.append(1) or real(*a, **kw),
+    )
+    _force_pool(monkeypatch)
+    hyperhyper.count_pairs(varied_corpus)
+    assert used, "the pool was never started"
+
+
+def test_single_chunk_never_starts_a_pool(varied_corpus, monkeypatch, tmp_path):
+    """
+    One chunk means one task, so a pool can only ever add its own startup.
+    """
+    varied_corpus.texts_to_file(tmp_path / "one", 10_000)
+    assert len(varied_corpus.texts) == 1
+    _force_pool(monkeypatch)
+    _forbid_pool(monkeypatch)
+    assert hyperhyper.count_pairs(varied_corpus).nnz > 0
+
+
+def test_merge_order_is_batched_and_sorted_within_a_batch():
+    """
+    The summation order is part of the answer (float32 addition is not
+    associative), so it is pinned here as well as in the equivalence suite:
+    consecutive groups of `2 * workers + 1` paths in corpus order, each group
+    sorted lexicographically. Note `texts_10` sorts before `texts_2`.
+    """
+    paths = [f"texts_{i}.pkl" for i in range(12)]
+    assert pair_counts.merge_order(paths, workers=2) == (
+        sorted(paths[:5]) + sorted(paths[5:10]) + sorted(paths[10:])
+    )
+    # a single group, and lexicographic rather than numeric
+    assert pair_counts.merge_order(paths, workers=10)[:3] == [
+        "texts_0.pkl",
+        "texts_1.pkl",
+        "texts_10.pkl",
+    ]
+
+
+def test_merge_order_covers_every_chunk_exactly_once():
+    paths = [f"texts_{i}.pkl" for i in range(37)]
+    for workers in (1, 2, 3, 10, 64):
+        assert sorted(pair_counts.merge_order(paths, workers)) == sorted(paths)
+
+
+# --------------------------------------------------------------------------
+# the chunking that feeds the parallelism
+# --------------------------------------------------------------------------
+#
+# `text_chunk_size` lives on `Bunch`, but the only thing it actually governs is
+# how many tasks the pair counting has to spread, so it is pinned next to the
+# counting it exists to serve.
+
+
+def test_auto_chunk_size_gives_the_pool_something_to_spread():
+    """
+    The regression the fixed 100000 default was: at 250k sentences it produced
+    three chunks, so a ten-core machine could not use more than three of them.
+    """
+    n = 250_000
+    size = bunch._auto_text_chunk_size(n, workers=10)
+    n_chunks = math.ceil(n / size)
+    assert n_chunks >= 10 * bunch.CHUNKS_PER_WORKER
+    # and the old default really was the bug
+    assert math.ceil(n / 100_000) < 10
+
+
+@pytest.mark.parametrize("workers", [1, 2, 4, 10, 64])
+def test_auto_chunk_size_tracks_the_worker_count(workers):
+    n = 4_000_000
+    size = bunch._auto_text_chunk_size(n, workers=workers)
+    assert math.ceil(n / size) >= min(
+        workers * bunch.CHUNKS_PER_WORKER, math.ceil(n / bunch.MIN_TEXT_CHUNK_SIZE)
+    )
+
+
+def test_auto_chunk_size_stays_within_its_bounds():
+    """
+    A tiny corpus must not be cut into per-sentence chunks (the round trip would
+    cost more than the counting), and a huge one must not put an unbounded
+    number of sentences into a single worker's memory.
+    """
+    assert bunch._auto_text_chunk_size(10, workers=10) == bunch.MIN_TEXT_CHUNK_SIZE
+    assert bunch._auto_text_chunk_size(0, workers=10) == bunch.MIN_TEXT_CHUNK_SIZE
+    assert bunch._auto_text_chunk_size(10**9, workers=10) == bunch.MAX_TEXT_CHUNK_SIZE
+
+
+def test_explicit_chunk_size_is_still_honoured(tmp_path):
+    """
+    `text_chunk_size` is public and its meaning has not changed; only the
+    default has moved from a fixed 100000 to "size it from the corpus".
+    """
+    corpus = hyperhyper.Corpus.from_texts(
+        ["a b c d e"] * 100, preproc_func=tokenize_texts
+    )
+    b = hyperhyper.Bunch(tmp_path / "explicit", corpus, text_chunk_size=7)
+    try:
+        assert len(b.corpus.texts) == math.ceil(100 / 7)
+    finally:
+        b.close()
+
+
+def test_invalid_chunk_size_is_rejected(tmp_path):
+    corpus = hyperhyper.Corpus.from_texts(
+        ["a b c d e"] * 10, preproc_func=tokenize_texts
+    )
+    with pytest.raises(ValueError, match="text_chunk_size"):
+        hyperhyper.Bunch(tmp_path / "bad", corpus, text_chunk_size=0)

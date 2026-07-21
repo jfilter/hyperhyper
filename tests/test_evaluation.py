@@ -7,12 +7,14 @@ that only checks "no exception was raised" is useless here: the analogy
 evaluation used to return a constant 0.0 and such a test passed happily.
 """
 
+from concurrent import futures
+
 import numpy as np
 import pytest
 from scipy.stats import rankdata
 
-from hyperhyper import evaluation
-from hyperhyper.preprocessing import tokenize_texts
+from hyperhyper import evaluation, preprocessing
+from hyperhyper.preprocessing import tokenize_texts, tokenize_texts_parallel
 from hyperhyper.svd import SVDEmbedding
 
 # A toy vector space, built so that the correct 3CosAdd answer is obvious.
@@ -506,3 +508,114 @@ def test_perfect_embedding_scores_one_on_every_real_dataset(
     assert result["oov"] == 0.0
     assert result["score"] == pytest.approx(1.0)
     assert result["fullscore"] == pytest.approx(1.0)
+
+
+# process pools
+
+
+class SerialExecutorStub:
+    """
+    A stand-in for `ProcessPoolExecutor` that does the work in this process.
+
+    Used so the regression tests below stay fast *and* still fail on an
+    assertion (with a count) rather than on a timeout, if the evaluation ever
+    starts spawning pools again.
+    """
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def map(self, fun, iterable, **kwargs):
+        return map(fun, iterable)
+
+
+@pytest.fixture()
+def count_pools(monkeypatch):
+    """
+    Count how often a `ProcessPoolExecutor` gets built, and neuter it.
+
+    `hyperhyper.utils` does `from concurrent import futures` and then reaches
+    for `futures.ProcessPoolExecutor`, so patching the attribute on the
+    `concurrent.futures` module is what the code under test actually sees.
+    """
+    calls = []
+
+    class Counting(SerialExecutorStub):
+        def __init__(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(futures, "ProcessPoolExecutor", Counting)
+    return calls
+
+
+def test_eval_similarity_spawns_no_process_pools(toy_embedding, count_pools):
+    """
+    The evaluation preprocesses a few thousand very short strings. Spawning a
+    process pool for that costs ~3s per call and the tokenization itself costs
+    ~0.08s for *all* of it, so a pool is pure overhead here.
+
+    This used to spawn one pool per dataset per column -- 12 for the six
+    bundled English similarity sets, which was 28% of a full `bunch.svd()`.
+    """
+    evaluation.eval_similarity(
+        toy_embedding, TOKEN2ID, tokenize_texts_parallel, lang="en"
+    )
+
+    assert count_pools == []
+
+
+def test_eval_analogies_spawns_no_process_pools(toy_embedding, count_pools):
+    evaluation.eval_analogies(
+        toy_embedding, TOKEN2ID, tokenize_texts_parallel, lang="en"
+    )
+
+    assert count_pools == []
+
+
+def test_parallel_preprocessing_does_not_change_any_score(
+    tmp_path, toy_embedding, use_dataset, count_pools, monkeypatch
+):
+    """
+    The threshold that keeps the evaluation out of the process pool is a
+    scheduling decision, not a semantic one: the same tokenizer is applied to
+    the same items in the same order either way, so every score has to come out
+    bit-identical.
+
+    `count_pools` swaps in a serial executor, so `PARALLEL_MIN_CHARS = 0` here
+    reproduces the old, unconditional `map_pool` code path without paying for
+    real subprocesses.
+    """
+    use_dataset(
+        write_dataset(
+            tmp_path,
+            "toy",
+            ["athens greece 9.5", "baghdad iraq 8.0", "athens iraq 1.0"],
+        )
+    )
+
+    serial = evaluation.eval_similarity(
+        toy_embedding, TOKEN2ID, tokenize_texts, lang="en"
+    )
+    thresholded = evaluation.eval_similarity(
+        toy_embedding, TOKEN2ID, tokenize_texts_parallel, lang="en"
+    )
+    assert count_pools == []
+
+    monkeypatch.setattr(preprocessing, "PARALLEL_MIN_CHARS", 0)
+    pooled = evaluation.eval_similarity(
+        toy_embedding, TOKEN2ID, tokenize_texts_parallel, lang="en"
+    )
+
+    assert count_pools != []  # the forced-pool run really did take that path
+    # a real score, not the nan that an all-out-of-vocabulary run returns
+    assert serial["results"][0]["oov"] == 0.0
+    assert serial["micro"] == pytest.approx(0.8660254037844387)
+    assert thresholded == serial
+    assert thresholded == pooled

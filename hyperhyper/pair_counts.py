@@ -4,8 +4,11 @@ construct a co-occurrence matrix by counting word pairs (co-locations of words)
 
 import logging
 import random
+import time
 from collections import defaultdict
 from concurrent import futures
+from contextlib import closing
+from itertools import islice
 from math import e, fabs, sqrt
 from pathlib import Path
 from types import MappingProxyType
@@ -49,52 +52,179 @@ def to_count_matrix(pair_counts, vocab_size):
     return count_matrix.tocsr()
 
 
+# What a `ProcessPoolExecutor` costs before it counts anything. A bare
+# 10-worker pool is 0.1s; the rest is that every child has to import
+# `hyperhyper` from scratch under macOS/spawn just to unpickle
+# `CountPairsClosure`. Measured on a 10-core M1 Pro, Python 3.12:
+#
+#     7.0s   when importing the package still pulled in spacy eagerly
+#     2.2s   now that `preprocessing` imports spacy lazily
+#
+# 3.0 is the measured 2.2 plus headroom for a cold page cache. It does not need
+# to be accurate: it is compared against an estimate carrying a 1.3x margin, so
+# it only decides the outcome for corpora within ~30% of the break-even, where
+# the two routes are within a second of each other anyway. Being wrong either
+# way costs about one pool startup.
+POOL_STARTUP_SECONDS = 3.0
+
+# How much faster the pool has to look before it is worth the risk. At 1.0 we
+# would start a pool to save nothing.
+POOL_SPEEDUP_MARGIN = 1.3
+
+# Sentences counted in-process to estimate the per-sentence cost. Large enough
+# to be above timer noise, small enough that the estimate is a rounding error
+# against any corpus where the answer is not obvious.
+PROBE_SENTENCES = 2000
+
+
+def merge_order(texts_paths, workers):
+    """
+    The order the partial matrices are summed in -- a hard-wired contract, not
+    an implementation detail.
+
+    float32 addition is not associative, so the summation order is part of the
+    answer: on this package's own corpora, reordering it moves ~500 cells of the
+    matrix by ~2e-4 for any configuration whose counts are not integers
+    (`dynamic_window` of "deter" with window>2, or "decay"). The order below --
+    consecutive groups of `2 * workers + 1` files in corpus order, sorted within
+    each group -- is what the previous scheduling loop happened to produce, and
+    `tests/test_pair_counts_equivalence.py` holds the result to it bit for bit.
+
+    Pinning it here is what makes the rest of this module free to schedule
+    however it likes: *which* worker finishes *when* no longer has any influence
+    on the result, because the merge no longer consults completion order at all.
+
+    Known wart, inherited and deliberately not changed: `workers` is the local
+    core count, so two machines with different core counts still produce
+    matrices that differ in the last bits. Fixing that means picking a fixed
+    group size, which would change every cached matrix.
+    """
+    group = workers * 2 + 1
+    order = []
+    for i in range(0, len(texts_paths), group):
+        order.extend(sorted(texts_paths[i : i + group]))
+    return order
+
+
+def _estimate_serial_seconds(texts_paths, count_pairs_closure):
+    """
+    Guess what counting the whole corpus in this process would cost, by counting
+    a slice of the first chunk and extrapolating.
+
+    Measured rather than derived from the corpus size because the per-token cost
+    is not a property of the corpus: on the same 5M-token corpus the default
+    configuration runs at 4.3 us/token and `subsample="prob"` at 0.54 us/token,
+    an 8x spread that no single token-count threshold can straddle. Getting this
+    wrong in the "prob" direction is exactly the case the pool loses on.
+    """
+    texts = read_pickle(texts_paths[0])
+    if not texts:
+        return 0.0
+    sample = texts[:PROBE_SENTENCES]
+    # a throwaway RNG: the sample's counts are discarded, only its timing is used
+    start = time.perf_counter()
+    count_pairs_closure.count_texts(sample, random.Random(0))
+    elapsed = time.perf_counter() - start
+    # the last chunk may be short, which makes this a slight overestimate --
+    # erring towards the pool, the right way round for large corpora
+    total_sentences = len(texts) * len(texts_paths)
+    return elapsed / len(sample) * total_sentences
+
+
+def _pool_is_worth_starting(texts_paths, count_pairs_closure, workers):
+    """
+    Whether spreading the counting over a process pool beats just doing it here.
+    """
+    if len(texts_paths) < 2 or workers < 2:
+        return False
+    serial = _estimate_serial_seconds(texts_paths, count_pairs_closure)
+    parallel = POOL_STARTUP_SECONDS + serial / min(workers, len(texts_paths))
+    logger.info(
+        "counting %s chunks: serial ~%.2fs, pool ~%.2fs",
+        len(texts_paths),
+        serial,
+        parallel,
+    )
+    return parallel * POOL_SPEEDUP_MARGIN < serial
+
+
+def _serial_results(texts_paths, count_pairs_closure):
+    for path in texts_paths:
+        yield path, count_pairs_closure(path)
+
+
+def _parallel_results(texts_paths, count_pairs_closure, workers):
+    """
+    Yield `(path, matrix)` as workers finish, keeping `2 * workers` tasks in
+    flight the whole time.
+
+    The loop this replaced submitted a round of jobs, drained *all* of them, and
+    only then submitted the next round, so every core sat idle from the moment
+    it finished its last task of a round until the slowest task in that round
+    came back. Topping the queue up on each individual completion removes the
+    barrier; the window still bounds how many partial matrices can be resident,
+    which is what the round-based version was really for.
+    """
+    with futures.ProcessPoolExecutor(workers) as executor:
+        paths = iter(texts_paths)
+        pending = {
+            executor.submit(count_pairs_closure, p): p
+            for p in islice(paths, workers * 2)
+        }
+        while pending:
+            finished, _ = futures.wait(pending, return_when=futures.FIRST_COMPLETED)
+            for job in finished:
+                path = pending.pop(job)
+                # re-arm before handing the result over: the consumer merges
+                # between yields, and a worker must not wait on that
+                for nxt in islice(paths, 1):
+                    pending[executor.submit(count_pairs_closure, nxt)] = nxt
+                yield path, job.result()
+
+
 def count_pairs_parallel(texts_paths, count_pairs_closure):
     """
-    count pairs in parallel by loading and processing files to keep memory
-    consumption low
+    Count pairs chunk by chunk, in a process pool when that pays for itself.
+
+    Chunks are loaded from disk one at a time (rather than held in memory) and
+    the partial matrices are merged and released as soon as a merge group is
+    complete, so peak memory is set by the in-flight window, not by the corpus.
     """
-    # Ensure that memory is freed when a job completes.
+    texts_paths = list(texts_paths)
+    if not texts_paths:
+        return None
+
+    workers = _default_workers()
+    order = merge_order(texts_paths, workers)
+    group = workers * 2 + 1
+
+    if _pool_is_worth_starting(texts_paths, count_pairs_closure, workers):
+        produce = _parallel_results(texts_paths, count_pairs_closure, workers)
+    else:
+        produce = _serial_results(texts_paths, count_pairs_closure)
+
     res = None
-    with futures.ProcessPoolExecutor(_default_workers()) as executor:
-        # A dictionary which will contain a list the future info in the key, and the filename in the value
-        jobs = {}
-        files_left = len(texts_paths)
-        files_iter = iter(texts_paths)
-
-        MAX_JOBS_IN_QUEUE = _default_workers() * 2  # heuristic ;)
-
-        with tqdm(total=len(texts_paths), desc="generating pairs") as pbar:
-            while files_left:
-                for this_file in files_iter:
-                    job = executor.submit(count_pairs_closure, this_file)
-                    jobs[job] = this_file
-                    if len(jobs) > MAX_JOBS_IN_QUEUE:
-                        break  # limit the job submission for now job
-
-                # Get the completed jobs whenever they are done.
-                # Buffer the partial matrices instead of adding them straight
-                # into `res`: `as_completed` yields in worker-completion order,
-                # and float32 addition is not associative, so accumulating as
-                # results arrive makes the cached `.npz` differ bit for bit
-                # between runs. `corpus.py` was hardened against exactly this
-                # for the vocab merge; this is the same fix for the pair counts.
-                # The buffer only ever holds one submission round (bounded by
-                # MAX_JOBS_IN_QUEUE), so memory stays where it was.
-                done = {}
-                for job in futures.as_completed(jobs):
-                    files_left -= 1
-                    pbar.update(1)
-                    done[jobs[job]] = job.result()
-                    del jobs[job]
-
-                # add in a fixed order, mirroring `Corpus.from_text_files`
-                for this_file in sorted(done):
-                    m = done.pop(this_file)
-                    if res is None:
-                        res = m
-                    else:
-                        res += m
+    buffer = {}
+    # `closing` so that an exception raised while merging tears the pool down
+    # here, rather than leaving it to whenever the generator is collected
+    with (
+        tqdm(total=len(texts_paths), desc="generating pairs") as pbar,
+        closing(produce) as results,
+    ):
+        # `order` is a concatenation of merge groups; consume just enough
+        # results to complete the next group, merge it, and drop it again
+        for i in range(0, len(order), group):
+            merge_group = order[i : i + group]
+            while any(path not in buffer for path in merge_group):
+                path, matrix = next(results)
+                buffer[path] = matrix
+                pbar.update(1)
+            for path in merge_group:
+                matrix = buffer.pop(path)
+                if res is None:
+                    res = matrix
+                else:
+                    res += matrix
     return res
 
 
@@ -113,6 +243,13 @@ class CountPairsClosure:
         # are reproducible no matter how the workers are started (spawn does not
         # inherit the parent's RNG state) or in which order the futures complete
         rng = random.Random(f"{self.seed}-{Path(text_path).name}")
+        return self.count_texts(texts, rng)
+
+    def count_texts(self, texts, rng):
+        """
+        The counting itself, split out from `__call__` so that a caller can time
+        a slice of a chunk without going near the filesystem or the RNG scheme.
+        """
         counter = defaultdict(int)
         for t in texts:
             for pair in iterate_tokens(
