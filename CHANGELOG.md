@@ -4,6 +4,24 @@
 
 ### Added
 
+-   **`dynamic_window="prob"` is vectorized too, and is now bit-identical.**
+    2.6x faster (0.910s to 0.355s on 200k tokens at `window=5`) — and, unlike a
+    numpy-RNG rewrite would have been, it reproduces the *exact* matrices this
+    configuration produced before, so results recorded with it still hold.
+
+    The equivalence gate previously stated that bit-identity was "not achievable"
+    for any randomized configuration. That assumed the vectorization would draw
+    from a numpy generator up front; it does not have to. `iterate_tokens` draws
+    one `randint(1, window)` per token in token order, and a comprehension over
+    the flattened chunk draws the same numbers in the same order. The gate now
+    holds this configuration to `assert_array_equal` across every window and
+    seed, and the docstring records why the old claim was wrong.
+
+    `subsample="prob"`/`"dirty"` deliberately stay on the Python loop: they
+    discard so many tokens that they are already the *fastest* configurations
+    (0.12-0.13s against 0.31s for the vectorized default), so vectorizing them
+    would optimize the cheap case and buy a second code path to keep in sync.
+
 -   **`bench/bench_svd.py` — which SVD backend to use, measured.** The package
     offered three (`scipy` exact, `gensim` and `scikit` randomized) and never said
     which to pick. It reports speed *and* fidelity in the terms the package

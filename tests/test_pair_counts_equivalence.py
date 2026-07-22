@@ -32,16 +32,31 @@ rounding differently, a reordered accumulation) that this gate exists to catch.
 If a vectorized rewrite cannot hit bit-identity here, that is a finding to
 discuss, not a tolerance to widen.
 
-Randomized configurations -- STATISTICAL EQUIVALENCE ONLY
-----------------------------------------------------------
-    dynamic_window == "prob"   or   subsample == "prob"
+`dynamic_window="prob"` without subsampling -- ALSO BIT-IDENTICAL
+------------------------------------------------------------------
+This section used to say bit-identity was "not achievable" for every randomized
+configuration. That was wrong, and the reasoning behind it is worth keeping
+because it is a plausible trap: it assumed a vectorization would draw its
+numbers from a *numpy* generator up front, which would indeed give different
+numbers at the same seed no matter how correct the rewrite was.
 
-Bit-identity is *not achievable* here and demanding it would be a bug in the
-test, not in the code. The current implementation draws one number per token
-from `random.Random`, interleaved with the counting loop; any sensible
-vectorization draws a whole array up front from a `numpy` generator. Different
-RNG, different draw order, different numbers -- at an identical seed. The
-matrices will differ per seed no matter how correct the rewrite is.
+It does not have to. `iterate_tokens` draws exactly one `randint(1, window)` per
+token in token order, and a comprehension over the flattened chunk draws the
+same numbers in the same order -- so the vectorized counter reproduces the
+stream verbatim and stays bit-identical to the frozen reference, and therefore
+to every number recorded before it existed. Held to `assert_array_equal` below,
+across all four windows and both seeds.
+
+Randomized subsampling -- STATISTICAL EQUIVALENCE ONLY
+-------------------------------------------------------
+    subsample in ("prob", "dirty")
+
+These stay on the Python loop, so nothing about their output has changed. The
+statistical machinery below remains the standard they are held to, because a
+future vectorization of *them* would face the interleaving the paragraph above
+sidesteps: the subsampling draws for a sentence precede its window draws, and
+under the clean variant a dropped token consumes a subsample draw but no window
+draw.
 
 What must survive is the *distribution*. So these are checked by:
 
@@ -892,3 +907,53 @@ def test_vectorized_counter_handles_a_single_token_sentence(grid_corpus):
         counter[pair[0], pair[1]] = counter.get((pair[0], pair[1]), 0) + pair[2]
     expected = pair_counts.to_count_matrix(counter, grid_corpus.vocab.size)
     np.testing.assert_array_equal(fast.toarray(), expected.toarray())
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+@pytest.mark.parametrize("window", WINDOWS)
+def test_prob_window_without_subsampling_is_bit_identical(grid_corpus, window, seed):
+    """
+    `dynamic_window="prob"` is randomized and *still* bit-identical.
+
+    The vectorized counter draws its radii from the same `random.Random`, one
+    per token in token order, rather than from a numpy generator -- so the
+    stream is the one the Python loop produced, and every number recorded before
+    the rewrite still reproduces. See the module docstring for why this was
+    previously believed impossible.
+    """
+    live, ref = _both(
+        grid_corpus,
+        window=window,
+        dynamic_window="prob",
+        subsample=None,
+        subsample_factor=SUBSAMPLE_FACTOR,
+        seed=seed,
+    )
+    np.testing.assert_array_equal(
+        live,
+        ref,
+        err_msg=(
+            f"live count_pairs diverged from the frozen reference for "
+            f"window={window} dynamic_window='prob' seed={seed}. The radius "
+            f"draws must come from random.Random in token order, so this is "
+            f"reproducible despite being randomized."
+        ),
+    )
+    assert ref.sum() > 0
+
+
+def test_prob_window_is_vectorized_but_subsampling_is_not(grid_corpus):
+    keep = pair_counts.subsample_keep_probabilities(grid_corpus.counts, 1.0)
+    assert _closure(grid_corpus, dynamic_window="prob").is_vectorizable() is True
+    # ... and adding subsampling takes it back off the fast path, because the
+    # two draw streams interleave
+    assert (
+        _closure(
+            grid_corpus, dynamic_window="prob", subsample="prob", subsampler_prob=keep
+        ).is_vectorizable()
+        is False
+    )
+    assert (
+        _closure(grid_corpus, subsample="dirty", subsampler_prob=keep).is_vectorizable()
+        is False
+    )

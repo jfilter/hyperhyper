@@ -345,6 +345,31 @@ class CountPairsClosure:
         """
         return self.subsampler_prob is not None or self.dynamic_window_prob
 
+    def is_vectorizable(self):
+        """
+        Whether `count_texts_vectorized` can handle this configuration.
+
+        Two families qualify, and what they have in common is that the *draw
+        stream* can be reproduced exactly -- either because there is none, or
+        because it is one draw per token in token order, which a list
+        comprehension over the flattened chunk gives verbatim:
+
+        * everything deterministic (no draws at all);
+        * `dynamic_window="prob"` **without** subsampling: exactly one
+          `randint(1, window)` per token, in order.
+
+        `subsample="prob"`/`"dirty"` stay on the loop. Not because their stream
+        could not be reproduced -- it could, with more care, since the
+        subsampling draws for a sentence all precede its radius draws -- but
+        because they are already the *fastest* configurations by a wide margin:
+        they discard so many tokens that few pairs survive, so vectorizing them
+        would optimize the cheap case and buy a second code path to keep in
+        sync.
+        """
+        return not self.uses_rng() or (
+            self.dynamic_window_prob and self.subsampler_prob is None
+        )
+
     def count_texts(self, texts, rng):
         """
         The counting itself, split out from `__call__` so that a caller can time
@@ -354,8 +379,8 @@ class CountPairsClosure:
         bit-identical matrix several times faster; everything else keeps the
         Python loop. See `count_texts_vectorized`.
         """
-        if not self.uses_rng():
-            vectorized = self.count_texts_vectorized(texts)
+        if self.is_vectorizable():
+            vectorized = self.count_texts_vectorized(texts, rng)
             if vectorized is not None:
                 return vectorized
 
@@ -376,7 +401,7 @@ class CountPairsClosure:
                 counter[pair[0], pair[1]] += pair[2]
         return to_count_matrix(counter, self.vocab_size)
 
-    def count_texts_vectorized(self, texts):
+    def count_texts_vectorized(self, texts, rng=None):
         """
         Count a whole chunk with numpy instead of the per-token Python loop.
 
@@ -384,11 +409,16 @@ class CountPairsClosure:
         the chunk is too large to hold its event arrays (the caller then falls
         back to the loop, which is slower but streams).
 
-        Only for configurations that draw no random numbers. The randomized
-        modes are left on the loop deliberately: their draw order per token is a
-        contract (see `iterate_tokens`), they emit far fewer pairs so they are
-        already the cheap case, and duplicating that logic would be the kind of
-        second implementation that drifts.
+        Handles the configurations `is_vectorizable` accepts: everything
+        deterministic, plus `dynamic_window="prob"` without subsampling.
+
+        The `"prob"` window keeps its exact draw stream rather than switching to
+        a numpy generator. `iterate_tokens` draws one `randint(1, window)` per
+        token in token order, and a comprehension over the flattened chunk draws
+        the same numbers in the same order -- so this stays bit-identical to the
+        loop *and* to every result recorded before it existed, which a numpy RNG
+        could never be. The draws themselves are not the expensive part
+        (~0.08s per 200k tokens against ~0.9s for the emission they gate).
 
         How bit-identity is kept
         ------------------------
@@ -428,8 +458,18 @@ class CountPairsClosure:
         sentence_end = sentence_start + np.repeat(lengths, lengths)
         centre = np.arange(len(flat), dtype=np.int64)
 
-        lo = np.maximum(sentence_start, centre - self.window)
-        hi = np.minimum(sentence_end, centre + self.window + 1)
+        if self.dynamic_window_prob:
+            # one draw per token, in token order -- exactly what the loop does
+            radius = np.fromiter(
+                (rng.randint(1, self.window) for _ in range(len(flat))),
+                dtype=np.int64,
+                count=len(flat),
+            )
+        else:
+            radius = self.window
+
+        lo = np.maximum(sentence_start, centre - radius)
+        hi = np.minimum(sentence_end, centre + radius + 1)
         span = hi - lo  # still includes the centre itself
         n_events = int(span.sum())
         if n_events > MAX_VECTORIZED_EVENTS:
