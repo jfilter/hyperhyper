@@ -13,7 +13,6 @@ Two things are pinned here, both of which used to cost seconds per call:
 
 import subprocess
 import sys
-import time
 import unicodedata
 from concurrent import futures
 
@@ -222,20 +221,43 @@ def test_pool_is_refused_when_it_would_not_pay(monkeypatch, pool_calls):
     assert result == tokenize_texts(TEXTS)
 
 
-def test_pool_verdict_scales_with_the_measured_cost(monkeypatch):
+def _verdict_for(monkeypatch, *, probe_seconds, workers=10, n_texts=5000):
     """
-    The verdict is measured, not derived from a size: a tokenizer slow enough
-    that distributing it beats a ~3s pool startup is accepted, the same input
-    with a fast one is refused.
+    Run the pool decision against a *fake clock* and a fixed worker count.
+
+    Both have to be pinned or the test encodes the machine it was written on: an
+    earlier version of this test slept for a millisecond per text and asserted
+    the verdict, which passed on a 10-core laptop and failed on every 2-core CI
+    runner. The arithmetic is what is under test, not the hardware.
     """
-    texts = ["a b c"] * 5000
+    monkeypatch.setattr(preprocessing, "_default_workers", lambda: workers)
+    ticks = iter([0.0, probe_seconds])
+    monkeypatch.setattr(preprocessing.time, "perf_counter", lambda: next(ticks))
+    return preprocessing._pool_is_worth_starting(["a b c"] * n_texts, str.split)
 
-    def slow(text):
-        time.sleep(0.001)
-        return text.split()
 
-    assert preprocessing._pool_is_worth_starting(texts, slow) is True
-    assert preprocessing._pool_is_worth_starting(texts, str.split) is False
+def test_pool_is_started_when_the_work_dwarfs_the_startup(monkeypatch):
+    # probe of 2000 of 5000 texts took 4s -> ~10s serial; 10 workers puts the
+    # pool at 3 + 1 = 4s, comfortably past the 1.3x margin
+    assert _verdict_for(monkeypatch, probe_seconds=4.0) is True
+
+
+def test_pool_is_refused_when_the_startup_dominates(monkeypatch):
+    # ~0.25s of work: the 3s startup can never be earned back
+    assert _verdict_for(monkeypatch, probe_seconds=0.1) is False
+
+
+def test_pool_is_refused_inside_the_margin(monkeypatch):
+    # 4.25s serial against a 3.43s pool: faster on paper, but not by the 1.3x
+    # the margin demands -- and the model ignores IPC, so the margin is what
+    # stops a marginal win from being taken as a real one. The break-even sits
+    # just above, at a 4.48s serial estimate.
+    assert _verdict_for(monkeypatch, probe_seconds=1.7) is False
+    assert _verdict_for(monkeypatch, probe_seconds=1.9) is True
+
+
+def test_pool_is_refused_on_a_single_worker(monkeypatch):
+    assert _verdict_for(monkeypatch, probe_seconds=4.0, workers=1) is False
 
 
 def test_accepts_an_iterator(pool_calls):
