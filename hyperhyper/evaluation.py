@@ -5,7 +5,9 @@ Can't use the evaluation methods in gensim because the keyed vector structure do
 So we have to caculate the metrics ourselves.
 """
 
+import csv
 import logging
+import math
 from importlib.resources import files
 from pathlib import Path
 
@@ -15,18 +17,77 @@ from . import evaluation_datasets
 
 logger = logging.getLogger(__name__)
 
+# The datasets ship as strict UTF-8 TSV (`.tsv`); the legacy whitespace `.txt`
+# format is still read for users' existing files. A file's format is chosen by
+# its extension, never by sniffing the delimiter (ADR 0002).
+_DATASET_SUFFIXES = (".tsv", ".txt")
 
-def _txt_files(directory):
+# The required TSV header row, keyed by the number of columns `setup_test_tokens`
+# keeps for each dataset kind: a similarity row is `word1 word2 score` (3), an
+# analogy row is `a a_prime b b_prime` (4). These names are the on-disk contract.
+_TSV_HEADERS = {
+    3: ("word1", "word2", "score"),
+    4: ("a", "a_prime", "b", "b_prime"),
+}
+
+
+class MalformedDatasetError(ValueError):
     """
-    The `.txt` datasets directly inside `directory`, or `[]` if it is absent.
+    A `.tsv` dataset is structurally invalid.
+
+    Strict parsing is a main reason for the TSV migration (ADR 0002): a bad
+    header, a wrong column count, an empty required field or a non-finite
+    similarity score *raises* -- naming the file and 1-based line number -- rather
+    than being silently dropped the way the legacy whitespace parser skips it.
+    """
+
+
+class DuplicateDatasetError(ValueError):
+    """
+    A directory holds the same dataset as both `foo.tsv` and `foo.txt`.
+
+    Scoring both would double-count the dataset (and its format would be
+    ambiguous), so discovery refuses rather than guessing which one is canonical.
+    """
+
+
+def _dataset_stem(name):
+    """The dataset name without its `.tsv`/`.txt` suffix."""
+    for suffix in _DATASET_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _dataset_files(directory):
+    """
+    The `.tsv`/`.txt` datasets directly inside `directory`, or `[]` if absent.
 
     `directory` may be an `importlib.resources` `Traversable` (the bundled
     data, possibly inside a zipimport) or a real `pathlib.Path` (a user's
     `data_dir`); both expose `iterdir`/`is_dir`, so the same code walks either.
+
+    A directory that holds the same dataset in both formats (`foo.tsv` and
+    `foo.txt`) is rejected with `DuplicateDatasetError` rather than scoring both.
     """
     if not directory.is_dir():
         return []
-    return [p for p in directory.iterdir() if p.name.endswith(".txt")]
+    found = [p for p in directory.iterdir() if p.name.endswith(_DATASET_SUFFIXES)]
+    by_stem = {}
+    for p in found:
+        by_stem.setdefault(_dataset_stem(p.name), []).append(p.name)
+    collisions = {
+        stem: sorted(names) for stem, names in by_stem.items() if len(names) > 1
+    }
+    if collisions:
+        detail = "; ".join(
+            f"{stem}: {names}" for stem, names in sorted(collisions.items())
+        )
+        raise DuplicateDatasetError(
+            f"duplicate dataset(s) present as both .tsv and .txt in {directory}: "
+            f"{detail}. Keep exactly one format per dataset."
+        )
+    return found
 
 
 def read_test_data(lang, kind, data_dir=None, include_bundled=True):
@@ -35,10 +96,12 @@ def read_test_data(lang, kind, data_dir=None, include_bundled=True):
 
     By default this is the data bundled with the package. Pass `data_dir` to
     also evaluate on your own domain datasets: it is a directory laid out the
-    same way as the bundled data -- either ``<data_dir>/<lang>/<kind>/*.txt``
+    same way as the bundled data -- either ``<data_dir>/<lang>/<kind>/*.tsv``
     (mirroring the bundle exactly) or, for a single-language collection, a flat
-    ``<data_dir>/<kind>/*.txt``; whichever exists is used. The files use the
-    same 3-column (``word1 word2 score``) or 4-column (``a a_ b b_``) format.
+    ``<data_dir>/<kind>/*.tsv``; whichever exists is used. The bundled files are
+    strict UTF-8 TSV (header row, ``# key: value`` preamble); a legacy
+    whitespace ``.txt`` in the same layout is still read via the compatibility
+    path (chosen by extension, never by delimiter sniffing).
 
     `include_bundled=False` evaluates *only* `data_dir`, replacing the bundled
     sets instead of adding to them; the default (`True`) evaluates the user's
@@ -56,22 +119,22 @@ def read_test_data(lang, kind, data_dir=None, include_bundled=True):
     datasets = []
     if include_bundled:
         bundled = files(evaluation_datasets).joinpath(lang).joinpath(kind)
-        datasets.extend(_txt_files(bundled))
+        datasets.extend(_dataset_files(bundled))
     if data_dir is not None:
         root = Path(data_dir)
         # prefer the bundle-mirroring `<data_dir>/<lang>/<kind>`; fall back to a
         # flat `<data_dir>/<kind>` for a single-language collection
         nested = root.joinpath(lang).joinpath(kind)
         custom = nested if nested.is_dir() else root.joinpath(kind)
-        datasets.extend(_txt_files(custom))
+        datasets.extend(_dataset_files(custom))
     return sorted(datasets, key=lambda p: p.name)
 
 
 def data_name(data):
     """
-    the file name of a test dataset, without the `.txt` suffix
+    the file name of a test dataset, without the `.tsv`/`.txt` suffix
     """
-    return data.name.removesuffix(".txt")
+    return _dataset_stem(data.name)
 
 
 def to_item(li):
@@ -180,25 +243,94 @@ def setup_test_tokens(p, keep_len):
     """
     Read a similarity/analogy dataset file into its `keep_len` word/score columns.
 
-    Blank lines and comment lines are ignored. A comment is any line whose first
-    non-whitespace character is ``#`` (the provenance/metadata convention the
-    bundled files use) or ``:`` (a word2vec-style analogy section header such as
-    ``: capital-common-countries``). Comments are skipped *before* the field-count
-    check, so a comment that happens to split into exactly `keep_len` whitespace
-    fields -- e.g. ``# a b`` in a 3-field file, which splits into three tokens --
-    is no longer silently leaked as a data row. This retires ADR 0001's fragile
-    "a header must not split into the field count" invariant (ADR 0002, roadmap 1).
+    The on-disk format is chosen by the file's extension, never by sniffing its
+    delimiter (ADR 0002):
 
-    A non-blank, non-comment line that does *not* split into exactly `keep_len`
-    whitespace-separated fields is malformed. Rather than being dropped silently
-    (which hid typos and wrong column counts), it is reported with a
-    `logger.warning` naming the file, the 1-based line number and the offending
-    content, then skipped -- one bad row no longer aborts the whole evaluation,
-    but it is no longer invisible either.
+    * ``.tsv`` -- the current strict, standard-library-``csv`` TSV format. A
+      ``# key: value`` preamble is skipped, the header row is validated against
+      `keep_len` (``word1 word2 score`` for 3, ``a a_prime b b_prime`` for 4),
+      and every subsequent non-blank record must have exactly `keep_len` columns.
+      A bad header, wrong column count, empty required field or non-finite
+      similarity score *raises* `MalformedDatasetError` with the file and 1-based
+      line number, rather than being silently dropped.
+    * ``.txt`` -- the legacy whitespace format, kept for users' existing files.
+      Blank and comment lines (leading ``#`` or a ``:`` word2vec section header)
+      are skipped; a malformed non-comment row is reported with a
+      `logger.warning` (file, line, content) and skipped so one bad row does not
+      abort the evaluation.
 
-    Returns the kept columns as `zip(*rows, strict=True)`, exactly as before; the
+    Returns the kept columns as `zip(*rows, strict=True)` for both formats; the
     per-field/per-pair scoring downstream is unchanged.
     """
+    if p.name.endswith(".tsv"):
+        return _read_tsv(p, keep_len)
+    return _read_txt_whitespace(p, keep_len)
+
+
+def _read_tsv(p, keep_len):
+    """Strict TSV parse (see `setup_test_tokens`); raises on any malformed input."""
+    expected = _TSV_HEADERS[keep_len]
+    score_idx = expected.index("score") if "score" in expected else None
+
+    lines = p.read_text(encoding="utf-8").split("\n")
+
+    # the header is the first line that is neither blank nor a `#`-preamble line;
+    # metadata/comments are allowed *only* in that preamble, before the header
+    header_idx = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        header_idx = i
+        break
+    if header_idx is None:
+        raise MalformedDatasetError(
+            f"{p.name}: no header row found; expected {list(expected)!r} "
+            f"after the optional '# key: value' preamble"
+        )
+
+    header = next(csv.reader([lines[header_idx]], delimiter="\t"))
+    if tuple(header) != expected:
+        raise MalformedDatasetError(
+            f"{p.name}:{header_idx + 1}: header must be {list(expected)!r}, "
+            f"got {header!r}"
+        )
+
+    kept = []
+    for lineno, line in enumerate(lines[header_idx + 1 :], header_idx + 2):
+        if not line.strip():
+            # blank records are allowed and skipped; there is no comment
+            # convention after the header -- a stray `#` line is a malformed row
+            continue
+        fields = next(csv.reader([line], delimiter="\t"))
+        if len(fields) != keep_len:
+            raise MalformedDatasetError(
+                f"{p.name}:{lineno}: expected {keep_len} tab-separated column(s), "
+                f"got {len(fields)}: {line!r}"
+            )
+        if any(field == "" for field in fields):
+            raise MalformedDatasetError(
+                f"{p.name}:{lineno}: empty required field: {line!r}"
+            )
+        if score_idx is not None:
+            raw = fields[score_idx]
+            try:
+                value = float(raw)
+            except ValueError:
+                raise MalformedDatasetError(
+                    f"{p.name}:{lineno}: score {raw!r} is not a finite number"
+                ) from None
+            if not math.isfinite(value):
+                raise MalformedDatasetError(
+                    f"{p.name}:{lineno}: score {raw!r} is not finite"
+                )
+        kept.append(fields)
+    # every kept row has exactly `keep_len` columns after the checks above
+    return zip(*kept, strict=True)
+
+
+def _read_txt_whitespace(p, keep_len):
+    """Legacy whitespace parse (see `setup_test_tokens`); warns-and-skips bad rows."""
     kept = []
     for lineno, line in enumerate(p.read_text(encoding="utf-8").split("\n"), 1):
         stripped = line.strip()

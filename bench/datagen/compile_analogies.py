@@ -3,16 +3,16 @@
 Offline analogy-dataset builder (ADR 0001, P2).
 
 Turns a file of verified one-to-one *base pairs* (`capital<TAB>country`) into a
-frozen four-column analogy `.txt` in the exact format the runtime reads, and
-writes it into the package's `evaluation_datasets/` tree.
+frozen four-column analogy `.tsv` in the exact strict-TSV format the runtime
+reads, and writes it into the package's `evaluation_datasets/` tree.
 
 This is a *build tool*, not a runtime dependency: it imports only the standard
 library plus `hyperhyper.preprocessing.tokenize_string` (to apply the package's
 own single-token rule). It performs no network calls and loads no
 LLM/torch/transformers -- fact verification happens out of band by a human with
 web sources, and is recorded in the base-pairs file (see `pairs/*.tsv`) and in
-the emitted header. The frozen `.txt` is the artifact of record; re-running this
-script is an audit/regeneration step, never something the package does at
+the emitted preamble. The frozen `.tsv` is the artifact of record; re-running
+this script is an audit/regeneration step, never something the package does at
 install, train or eval time.
 
 Design (per the ADR):
@@ -24,14 +24,16 @@ Design (per the ADR):
 * Quadruples are compiled *deterministically* with a fixed seed and a fixed cap
   K: each base pair is the source (leading) pair of exactly K questions, so the
   file grows as N*K, not the N*(N-1) full Cartesian product the ADR forbids.
-* The provenance header is written as `#`-comment lines, and this script asserts
-  that not one of them splits into exactly four whitespace tokens -- otherwise it
-  would leak into the parser as a bogus data row (see `setup_test_tokens`).
+* The output is strict UTF-8 TSV (ADR 0002): a `# key: value` provenance preamble,
+  then a required `a<TAB>a_prime<TAB>b<TAB>b_prime` header, then tab-delimited
+  quadruples written with the standard-library `csv` writer. The preamble is
+  structurally separated from the data by the header row, so provenance comments
+  can no longer leak into the parser as bogus data rows.
 
 Usage:
     python compile_analogies.py \
         --pairs pairs/fr_capitals.tsv \
-        --out ../../hyperhyper/evaluation_datasets/fr/analogy/capitals.txt \
+        --out ../../hyperhyper/evaluation_datasets/fr/analogy/capitals.tsv \
         --lang fr --relation capital-country --cap 5 --seed 0
 
 Run with no arguments to rebuild the shipped French capitals set with the frozen
@@ -41,6 +43,8 @@ defaults, then self-check the round-trip through the package parser.
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import random
 import sys
 from pathlib import Path
@@ -60,11 +64,13 @@ DEFAULT_OUT = (
     / "evaluation_datasets"
     / "fr"
     / "analogy"
-    / "capitals.txt"
+    / "capitals.tsv"
 )
 GENERATOR = "Claude Opus 4.8 (LLM-proposed, human web-verified)"
 BUILD_DATE = "2026-07-22"
-ANALOGY_FIELDS = 4  # a a_ b b_
+ANALOGY_FIELDS = 4  # a a_prime b b_prime
+# the strict-TSV header the runtime reader validates for a 4-column analogy set
+ANALOGY_HEADER = ("a", "a_prime", "b", "b_prime")
 
 
 def load_pairs(path: Path) -> list[tuple[str, str]]:
@@ -140,12 +146,20 @@ def compile_quadruples(
     return quads
 
 
-def build_header(
+def build_preamble(
     lang: str, relation: str, n_pairs: int, n_quads: int, cap: int, seed: int
 ) -> list[str]:
-    """Provenance `#`-comment lines. Asserts none splits into 4 tokens."""
-    lines = [
-        f"# {lang}/analogy/capitals.txt -- generated offline by bench/datagen (ADR 0001, phase P2).",
+    """The strict-TSV `# key: value` provenance preamble (ADR 0002).
+
+    Written before the header row, which structurally separates it from the
+    data, so -- unlike the retired whitespace format -- a comment can never leak
+    into the parser as a bogus data row regardless of how it tokenizes.
+    """
+    return [
+        "# hyperhyper-eval: 1",
+        f"# language: {lang}",
+        "# kind: analogy",
+        f"# {lang}/analogy/capitals.tsv -- generated offline by bench/datagen (ADR 0001, phase P2).",
         f"# Generator model was {GENERATOR}; build date {BUILD_DATE}.",
         "# Status of this file: LLM-proposed base pairs, then independently fact-verified against non-LLM sources; NOT a raw LLM dump.",
         f"# Relation type is {relation}; it is one-to-one and fact-verifiable (a capital has exactly one country).",
@@ -156,21 +170,22 @@ def build_header(
         f"# Verified base pairs used: {n_pairs}, at a 100 percent verification rate; canonical pairs live in bench/datagen/pairs/fr_capitals.tsv.",
         f"# Compiled deterministically with seed {seed} and a per-base-pair source cap of K equal to {cap} questions; {n_quads} quadruples total.",
         "# Every term is a single token under hyperhyper.preprocessing.tokenize_string; multi-token country names were excluded upstream.",
-        "# These comment lines are ignored by the parser: setup_test_tokens keeps only 4-field lines, and none of these lines has exactly four whitespace-separated fields.",
     ]
-    leaks = [ln for ln in lines if len(ln.split()) == ANALOGY_FIELDS]
-    if leaks:
-        raise SystemExit(
-            "header line(s) would split into exactly 4 tokens and leak as data: "
-            + repr(leaks)
-        )
-    return lines
 
 
-def write_dataset(out: Path, header: list[str], quads) -> None:
+def write_dataset(out: Path, preamble: list[str], quads) -> None:
+    """Write the strict TSV: preamble, header row, then tab-delimited quadruples."""
     out.parent.mkdir(parents=True, exist_ok=True)
-    body = "\n".join(f"{a}\t{a_}\t{b}\t{b_}" for a, a_, b, b_ in quads)
-    out.write_text("\n".join(header) + "\n" + body + "\n", encoding="utf-8")
+    buf = io.StringIO()
+    for line in preamble:
+        buf.write(line + "\n")
+    writer = csv.writer(
+        buf, delimiter="\t", lineterminator="\n", quoting=csv.QUOTE_MINIMAL
+    )
+    writer.writerow(ANALOGY_HEADER)
+    for quad in quads:
+        writer.writerow(quad)
+    out.write_text(buf.getvalue(), encoding="utf-8")
 
 
 def selfcheck(out: Path, quads) -> None:
@@ -208,10 +223,10 @@ def main(argv=None) -> None:
     check_single_token(pairs)
     check_distinct(pairs)
     quads = compile_quadruples(pairs, cap=args.cap, seed=args.seed)
-    header = build_header(
+    preamble = build_preamble(
         args.lang, args.relation, len(pairs), len(quads), args.cap, args.seed
     )
-    write_dataset(args.out, header, quads)
+    write_dataset(args.out, preamble, quads)
     print(
         f"wrote {args.out} : {len(pairs)} base pairs -> {len(quads)} quadruples "
         f"(cap K={args.cap}, seed={args.seed})"

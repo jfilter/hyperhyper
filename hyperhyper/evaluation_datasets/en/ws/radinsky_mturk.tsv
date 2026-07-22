@@ -1,8 +1,11 @@
+# hyperhyper-eval: 1
+# language: en
+# kind: ws
 # curated-v2 data cleaning per ADR 0001 (P0); applied 2026-07-22. Only rows were removed; no gold score was altered or averaged.
-# These comment lines are ignored by the parser (setup_test_tokens keeps only 3-field lines; none of these lines have exactly three fields).
 # Dropped BOTH rows of 1 conflicting-duplicate pair(s) -- same (case/order-insensitive) pair with differing aggregate scores. ADR rule: two unexplained aggregates are dropped, never averaged.
 #   dropped-conflict: [gasoline stock = 2.888888889]; [stock gasoline = 3.166666667]
 # rows before cleaning: 287; rows after: 285.
+word1	word2	score
 episcopal	russia	2.75
 water	shortage	2.714285714
 horse	wedding	2.266666667

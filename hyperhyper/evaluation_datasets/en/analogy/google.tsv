@@ -1,7 +1,10 @@
+# hyperhyper-eval: 1
+# language: en
+# kind: analogy
 # curated-v2 data cleaning per ADR 0001 (P0); applied 2026-07-22. Only rows were removed; no gold answer was altered.
-# These comment lines are ignored by the parser (setup_test_tokens keeps only 4-field lines; none of these lines have exactly four fields).
 # Collapsed 171 exact-duplicate row(s) (same four tokens, case-insensitive) to a single occurrence; kept first.
 # rows before cleaning: 19544; rows after: 19373.
+a	a_prime	b	b_prime
 athens	greece	baghdad	iraq
 athens	greece	bangkok	thailand
 athens	greece	beijing	china

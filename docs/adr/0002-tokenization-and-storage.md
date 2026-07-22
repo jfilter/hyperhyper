@@ -67,19 +67,33 @@ right, and why is the data stored the way it is ("why not CSV?").
 
 ### Storage — the reviews diverged; decided toward the proportionate path
 
-- **Evaluation datasets: keep the whitespace `.txt` format. Do NOT migrate to
-  TSV/CSV/JSONL now.** Harden the parser instead:
-  - Skip lines whose first non-space char is `#` *before* the field-count filter —
-    a real comment convention, retiring ADR 0001's fragile "headers must not split
-    into N fields" invariant (one line).
-  - **Warn (with filename:line) on a malformed non-comment, non-blank line instead
-    of dropping it silently** (fact 5) — this captures Codex's strongest
-    robustness point without a format migration.
-  - Rationale for not migrating: multi-word entries are a **scorer** limitation
-    (`to_item` needs one vocab token), not a format one — TSV would let us *write*
-    `vice president` but nothing could *score* it. Against that, `.txt` keeps the
-    de-facto hyperwords/word2vec interop, glanceability, and every existing user
-    file. See "Where the reviews diverged".
+- **Evaluation datasets: migrate to TSV, reading legacy `.txt` for
+  backward-compatibility.** *(Reversed 2026-07-22 — this section originally decided
+  to keep `.txt`; see the amendment below.)*
+  - Canonical format: UTF-8 `.tsv` with a `# key: value` metadata preamble, a
+    required header row, tab-delimited fields, parsed with the stdlib `csv` module.
+    Malformed rows **raise** (with file:line), not warn.
+  - Legacy `.txt` (whitespace) is still read via the hardened parser below —
+    users' existing files keep working; the reader dispatches on file extension,
+    never by sniffing. A directory with both `foo.tsv` and `foo.txt` is an error.
+  - The parser hardening decided here still shipped and is now the **legacy `.txt`
+    read path**: skip `#`/`:` comment lines before the field-count filter (retiring
+    ADR 0001's fragile "headers must not split into N fields" invariant), and warn
+    (file:line) on a malformed legacy row instead of dropping it silently (fact 5).
+
+  > **Amendment (2026-07-22): reversed from "keep `.txt`" to "migrate to TSV".**
+  > The original decision rested on a hyperwords/word2vec "space-delimited interop"
+  > premise. Checking the files disproved it: they are already *inconsistently*
+  > delimited — `en/ws/ws353.txt` and `en/analogy/msr.txt` are tab-separated,
+  > `de/ws/gur350.txt` is space-separated, all parsed leniently by `.split()` and
+  > misnamed `.txt`. The data is already half-TSV. A declared TSV format with a
+  > real parser *removes* that mess, gives headers + a metadata preamble + strict
+  > errors-not-silent-drops, and fits the richer rows the ADR-0001 P4 domain-proxy
+  > datasets will need (e.g. synonym multiple-choice: target + gold + distractors).
+  > The one thing TSV does *not* buy — scoring multi-word entries — remains a
+  > *scorer* limitation (unigram vocab), unchanged by the format. GPT/codex
+  > recommended TSV from the start; Fable's "keep `.txt`" rested on the interop
+  > premise the files contradict. Maintainer confirmed the migration.
 - **Corpus training chunks: keep pickle.** They are ragged `array('H'/'L')` integer
   id sequences (not readable tokens), a derived regenerable cache inside a bunch
   directory. Document that a bunch directory is a **trusted local cache — never
@@ -108,12 +122,12 @@ The one real disagreement was the evaluation-data format:
   unscoreable, so TSV buys representational power the evaluator cannot use, at the
   cost of interop and every existing file.
 
-**Resolved toward Fable, taking Codex's robustness point.** We do not migrate, but
-we do add both the `#`-comment convention and the warn-on-malformed behavior — so
-the "silent discard" danger is fixed without spending the interop/glanceability
-the format has. If a later phase (ADR 0001's P4 domain proxy tasks) needs a
-genuinely richer row shape, that new `kind` may define its own format then, decided
-on its own merits rather than pre-migrating `ws`/`analogy` for it.
+**Initially resolved toward Fable, then reversed to Codex's TSV (2026-07-22).** The
+first call kept `.txt` and only hardened the parser. On a second look the interop
+premise behind "keep `.txt`" proved false — the bundled files are already a
+tab/space mix (see the amendment under Decision) — so the maintainer took Codex's
+recommendation: migrate to TSV, keep reading legacy `.txt`. The parser hardening
+still shipped and became the legacy read path, so it was not wasted.
 
 ## Two judgment calls worth the maintainer's eye
 
@@ -124,8 +138,11 @@ on its own merits rather than pre-migrating `ws`/`analogy` for it.
    explicit parameter. The maintainer chose **keep digits by default** — the stated
    audience is small *domain* corpora — with legacy digit→`0` available as an
    option and documented as the paper's convention.
-2. **Not migrating to TSV.** The proportionate choice above; recorded explicitly so
-   a future maintainer sees it was a decision, not an oversight.
+2. **Evaluation-data format. DECIDED (2026-07-22): migrate to TSV**, reading legacy
+   `.txt` for backward-compatibility. Initially this ADR decided to keep `.txt`;
+   that was reversed once the "space-delimited interop" premise was found false (the
+   files are already a tab/space mix) and because ADR-0001 P4 needs richer rows. See
+   the amendment under Decision.
 
 ## Consequences
 

@@ -1,4 +1,7 @@
-# fr/analogy/capitals.txt -- generated offline by bench/datagen (ADR 0001, phase P2).
+# hyperhyper-eval: 1
+# language: fr
+# kind: analogy
+# fr/analogy/capitals.tsv -- generated offline by bench/datagen (ADR 0001, phase P2).
 # Generator model was Claude Opus 4.8 (LLM-proposed, human web-verified); build date 2026-07-22.
 # Status of this file: LLM-proposed base pairs, then independently fact-verified against non-LLM sources; NOT a raw LLM dump.
 # Relation type is capital-country; it is one-to-one and fact-verifiable (a capital has exactly one country).
@@ -9,7 +12,7 @@
 # Verified base pairs used: 63, at a 100 percent verification rate; canonical pairs live in bench/datagen/pairs/fr_capitals.tsv.
 # Compiled deterministically with seed 0 and a per-base-pair source cap of K equal to 5 questions; 315 quadruples total.
 # Every term is a single token under hyperhyper.preprocessing.tokenize_string; multi-token country names were excluded upstream.
-# These comment lines are ignored by the parser: setup_test_tokens keeps only 4-field lines, and none of these lines has exactly four whitespace-separated fields.
+a	a_prime	b	b_prime
 paris	france	ottawa	canada
 paris	france	tallinn	estonie
 paris	france	accra	ghana

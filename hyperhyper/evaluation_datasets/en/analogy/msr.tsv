@@ -1,7 +1,10 @@
+# hyperhyper-eval: 1
+# language: en
+# kind: analogy
 # curated-v2 data cleaning per ADR 0001 (P0); applied 2026-07-22. Only rows were removed; no gold answer was altered.
-# These comment lines are ignored by the parser (setup_test_tokens keeps only 4-field lines; none of these lines have exactly four fields).
 # Removed 1000 multi-token row(s): an entry splits into >1 token under package preprocessing (tokenize_string), so the scorer can never represent it. Offending entries e.g.: "city's"(x10), "nation's"(x10), "company's"(x10), "state's"(x10), "year's"(x10), "county's"(x10), "country's"(x10), "world's"(x10), "today's"(x10), "government's"(x10), "attorney's"(x10), "district's"(x10).
 # rows before cleaning: 8000; rows after: 7000.
+a	a_prime	b	b_prime
 good	better	rough	rougher
 better	good	rougher	rough
 good	best	rough	roughest

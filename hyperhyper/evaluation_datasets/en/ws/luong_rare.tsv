@@ -1,5 +1,7 @@
+# hyperhyper-eval: 1
+# language: en
+# kind: ws
 # curated-v2 data cleaning per ADR 0001 (P0); applied 2026-07-22. Only rows were removed; no gold score was altered or averaged.
-# These comment lines are ignored by the parser (setup_test_tokens keeps only 3-field lines; none of these lines have exactly three fields).
 # Dropped BOTH rows of 1 conflicting-duplicate pair(s) -- same (case/order-insensitive) pair with differing aggregate scores. ADR rule: two unexplained aggregates are dropped, never averaged.
 #   dropped-conflict: [rediscovery discovery = 6.6]; [discovery rediscovery = 7.5]
 # Removed 20 multi-token row(s) whose entry splits into >1 token under package preprocessing (tokenize_string), so the scorer can never represent them (they only inflated oov):
@@ -24,6 +26,7 @@
 #   removed-multitoken: [replacements stand-in = 9.25] (entry 'stand-in' -> ['stand', 'in'])
 #   removed-multitoken: [invariable hard-and-fast = 6.57] (entry 'hard-and-fast' -> ['hard', 'and', 'fast'])
 # rows before cleaning: 2034; rows after: 2012.
+word1	word2	score
 squishing	squirt	5.88
 undated	undatable	5.83
 circumvents	beat	5.33

@@ -1,7 +1,10 @@
+# hyperhyper-eval: 1
+# language: en
+# kind: ws
 # curated-v2 data cleaning per ADR 0001 (P0); applied 2026-07-22. Only rows were removed; no gold score was altered or averaged.
-# These comment lines are ignored by the parser (setup_test_tokens keeps only 3-field lines; none of these lines have exactly three fields).
 # Removed 1 self-pair row(s) (word paired with itself), forbidden by the dataset linter: [tiger tiger]
 # rows before cleaning: 203; rows after: 202.
+word1	word2	score
 tiger	cat	7.35
 plane	car	5.77
 train	car	6.31

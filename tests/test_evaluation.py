@@ -52,7 +52,35 @@ def toy_embedding():
     return SVDEmbedding(TOY_VECTORS, np.ones(3), eig=0.0)
 
 
+# the required TSV header for each column count `setup_test_tokens` keeps
+_TSV_HEADER = {3: "word1\tword2\tscore", 4: "a\ta_prime\tb\tb_prime"}
+
+
 def write_dataset(tmp_path, name, lines):
+    """
+    Write a toy dataset in the shipped strict-TSV format.
+
+    The space-separated toy `lines` are re-emitted tab-delimited under the
+    required header row, whose shape (similarity vs analogy) is inferred from the
+    column count of the first row -- so the scoring tests exercise the real
+    ``.tsv`` reader path the evaluator now takes.
+    """
+    rows = [line.split() for line in lines]
+    header = _TSV_HEADER[len(rows[0])]
+    body = "\n".join("\t".join(row) for row in rows)
+    path = tmp_path / f"{name}.tsv"
+    path.write_text(header + "\n" + body + "\n", encoding="utf-8")
+    return path
+
+
+def write_legacy_txt(tmp_path, name, lines):
+    """
+    Write a legacy whitespace ``.txt`` dataset verbatim.
+
+    Kept so the back-compatibility path (chosen by extension) stays covered: its
+    ``#``/``:`` comment skipping and warn-and-skip-malformed behaviour differ
+    from the strict TSV reader and must keep working for users' existing files.
+    """
     path = tmp_path / f"{name}.txt"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -107,7 +135,8 @@ def test_to_item_drops_multi_token_entries():
 def test_read_test_data():
     ws = evaluation.read_test_data("en", "ws")
     assert len(ws) > 0
-    assert all(p.suffix == ".txt" for p in ws)
+    # the bundled datasets ship as strict TSV since ADR 0002
+    assert all(p.name.endswith(".tsv") for p in ws)
     # the paths have to still be readable after the function returned
     assert all(p.read_text(encoding="utf-8") for p in ws)
 
@@ -136,8 +165,114 @@ def test_eval_returns_nan_when_nothing_is_in_vocabulary(
     assert np.isnan(sims["micro"]) and np.isnan(sims["macro"])
 
 
-def test_setup_test_tokens(tmp_path, caplog):
-    path = write_dataset(
+# strict TSV reader (the shipped `.tsv` path)
+
+
+def write_tsv(tmp_path, name, lines):
+    """Write a `.tsv` verbatim (preamble/header/data all supplied by the caller)."""
+    path = tmp_path / f"{name}.tsv"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_setup_test_tokens_tsv_reads_preamble_header_and_data(tmp_path):
+    """
+    The strict TSV reader skips the `# key: value` preamble, validates the header
+    row, and returns the data columns exactly like the legacy parser did.
+    """
+    path = write_tsv(
+        tmp_path,
+        "toy",
+        [
+            "# hyperhyper-eval: 1",
+            "# language: en",
+            "",  # a blank preamble line is allowed
+            "a\ta_prime\tb\tb_prime",
+            "athens\tgreece\tbaghdad\tiraq",
+        ],
+    )
+    columns = list(evaluation.setup_test_tokens(path, 4))
+    assert columns == [("athens",), ("greece",), ("baghdad",), ("iraq",)]
+
+
+def test_setup_test_tokens_tsv_malformed_row_raises_with_file_and_line(tmp_path):
+    """
+    Strict parsing is a main reason for the migration: a wrong-column-count row
+    RAISES `MalformedDatasetError` naming the file and 1-based line number,
+    rather than being silently dropped (the legacy `.txt` path's warn-and-skip).
+    """
+    path = write_tsv(
+        tmp_path,
+        "malformed",
+        [
+            "word1\tword2\tscore",
+            "athens\tgreece\t9",
+            "greece\tiraq",  # a column short -- a typo'd row, line 3
+        ],
+    )
+    with pytest.raises(evaluation.MalformedDatasetError) as exc:
+        list(evaluation.setup_test_tokens(path, 3))
+    message = str(exc.value)
+    assert "malformed.tsv:3" in message
+    assert "greece" in message
+
+
+def test_setup_test_tokens_tsv_bad_header_raises(tmp_path):
+    path = write_tsv(
+        tmp_path,
+        "badheader",
+        ["word1\tword2\tgold", "athens\tgreece\t9"],  # `gold`, not `score`
+    )
+    with pytest.raises(evaluation.MalformedDatasetError, match="header"):
+        list(evaluation.setup_test_tokens(path, 3))
+
+
+def test_setup_test_tokens_tsv_non_finite_score_raises(tmp_path):
+    path = write_tsv(
+        tmp_path,
+        "nonfinite",
+        ["word1\tword2\tscore", "athens\tgreece\tnot_a_number"],
+    )
+    with pytest.raises(evaluation.MalformedDatasetError, match="finite number"):
+        list(evaluation.setup_test_tokens(path, 3))
+
+
+def test_setup_test_tokens_tsv_comment_after_header_is_a_malformed_row(tmp_path):
+    """
+    Comments live only in the preamble; after the header there is no comment
+    convention, so a `#` line is a malformed data row (it raises, it is not
+    silently treated as a comment the way the legacy `.txt` parser would).
+    """
+    path = write_tsv(
+        tmp_path,
+        "latecomment",
+        ["word1\tword2\tscore", "athens\tgreece\t9", "# not a comment here"],
+    )
+    with pytest.raises(evaluation.MalformedDatasetError):
+        list(evaluation.setup_test_tokens(path, 3))
+
+
+def test_setup_test_tokens_tsv_quoted_multiword_field_parses(tmp_path):
+    """
+    TSV can now *represent* a multi-word entry (a quoted field with a space); the
+    reader must not choke on it -- it comes back as one field. The evaluator still
+    treats it as OOV (the unigram vocab cannot score it), which other tests cover.
+    """
+    path = write_tsv(
+        tmp_path,
+        "multiword",
+        ["word1\tword2\tscore", '"vice president"\tleader\t7.5'],
+    )
+    columns = list(evaluation.setup_test_tokens(path, 3))
+    # the quoted field is one column, kept whole -- not split on the space
+    assert columns == [("vice president",), ("leader",), ("7.5",)]
+
+
+# legacy `.txt` compatibility path (chosen by extension, warn-and-skip semantics)
+
+
+def test_setup_test_tokens_legacy_txt(tmp_path, caplog):
+    path = write_legacy_txt(
         tmp_path,
         "toy",
         ["# comment", "athens greece baghdad iraq", "too few columns"],
@@ -153,14 +288,16 @@ def test_setup_test_tokens(tmp_path, caplog):
     assert "too few columns" in record.getMessage()
 
 
-def test_setup_test_tokens_ignores_comment_that_splits_into_field_count(tmp_path):
+def test_setup_test_tokens_legacy_txt_ignores_comment_that_splits_into_field_count(
+    tmp_path,
+):
     """
-    ADR 0002 roadmap 1: a `#`-comment is skipped by its leading `#` *before* the
-    field-count filter, so a comment like `# a b` -- which splits into exactly
-    three whitespace fields and used to leak into a 3-field similarity file as a
-    data row -- is now safely ignored.
+    ADR 0002 roadmap 1 (legacy path): a `#`-comment is skipped by its leading `#`
+    *before* the field-count filter, so a comment like `# a b` -- which splits
+    into exactly three whitespace fields and used to leak into a 3-field
+    similarity file as a data row -- is safely ignored.
     """
-    path = write_dataset(
+    path = write_legacy_txt(
         tmp_path,
         "leaky",
         ["# a b", "athens greece 9", "greece iraq 5"],
@@ -168,7 +305,7 @@ def test_setup_test_tokens_ignores_comment_that_splits_into_field_count(tmp_path
     columns = list(evaluation.setup_test_tokens(path, 3))
     assert columns == [("athens", "greece"), ("greece", "iraq"), ("9", "5")]
     # the same for a 4-field analogy file with a comment that splits into four
-    path = write_dataset(
+    path = write_legacy_txt(
         tmp_path,
         "leaky4",
         ["# a b c", "athens greece baghdad iraq"],
@@ -177,12 +314,12 @@ def test_setup_test_tokens_ignores_comment_that_splits_into_field_count(tmp_path
     assert columns == [("athens",), ("greece",), ("baghdad",), ("iraq",)]
 
 
-def test_setup_test_tokens_skips_colon_section_headers(tmp_path):
+def test_setup_test_tokens_legacy_txt_skips_colon_section_headers(tmp_path):
     """
     A word2vec-style analogy section header (`: capital-common-countries`) is a
     comment too: it must not warn as a malformed row and must not be scored.
     """
-    path = write_dataset(
+    path = write_legacy_txt(
         tmp_path,
         "sections",
         [": capital-common-countries", "athens greece baghdad iraq"],
@@ -191,13 +328,13 @@ def test_setup_test_tokens_skips_colon_section_headers(tmp_path):
     assert columns == [("athens",), ("greece",), ("baghdad",), ("iraq",)]
 
 
-def test_setup_test_tokens_warns_and_skips_malformed_row(tmp_path, caplog):
+def test_setup_test_tokens_legacy_txt_warns_and_skips_malformed_row(tmp_path, caplog):
     """
     A genuinely malformed data row (wrong column count, not a comment, not
     blank) is skipped so one bad row does not abort an evaluation -- but it is
     reported with `logger.warning(file:line + content)`, not dropped silently.
     """
-    path = write_dataset(
+    path = write_legacy_txt(
         tmp_path,
         "malformed",
         [
@@ -218,9 +355,9 @@ def test_setup_test_tokens_warns_and_skips_malformed_row(tmp_path, caplog):
     assert "greece iraq" in message
 
 
-def test_setup_test_tokens_clean_file_warns_nothing(tmp_path, caplog):
+def test_setup_test_tokens_legacy_txt_clean_file_warns_nothing(tmp_path, caplog):
     """A normal, well-formed file parses unchanged and emits no warning."""
-    path = write_dataset(
+    path = write_legacy_txt(
         tmp_path,
         "clean",
         ["athens greece 9", "greece iraq 5", "athens iraq 1"],
