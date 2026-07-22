@@ -504,12 +504,32 @@ class Bunch:
         """
         Evaluate the performance on word analogies datasets.
         NB: The corpus has to be initialized with the correct language.
+
+        Pass `data_dir` (and optionally `include_bundled=False`) to evaluate on
+        your own analogy datasets; see `evaluation.read_test_data`.
         """
         return evaluation.eval_analogies(
             embd,
             self.corpus.vocab.token2id,
             self.corpus.preproc_fun,
             lang=self.corpus.lang,
+            **kwargs,
+        )
+
+    def dataset_coverage(self, kind="ws", **kwargs):
+        """
+        Report the in-vocabulary fraction of each evaluation dataset.
+
+        Lets you learn, before training an embedding, which bundled or custom
+        (`data_dir`) test sets this corpus's vocabulary can actually be scored
+        on. Computed under the corpus's own preprocessing, so it matches what
+        the evaluator will see. See `evaluation.dataset_coverage`.
+        """
+        return evaluation.dataset_coverage(
+            self.corpus.vocab.token2id,
+            self.corpus.preproc_fun,
+            lang=self.corpus.lang,
+            kind=kind,
             **kwargs,
         )
 

@@ -1,5 +1,10 @@
-Tiger  Katze  7.92
-Tiger  Tiger  10
+# curated-v2 data cleaning per ADR 0001 (P0); applied 2026-07-22. Only rows were removed; no gold score was altered or averaged.
+# These comment lines are ignored by the parser (setup_test_tokens keeps only 3-field lines; none of these lines have exactly three fields).
+# Dropped BOTH rows of 2 conflicting-duplicate pair(s) -- same (case/order-insensitive) pair with differing aggregate scores. ADR rule: two unexplained aggregates are dropped, never averaged.
+#   dropped-conflict: [Geld Bargeld = 9.69]; [Geld Bargeld = 9.19]
+#   dropped-conflict: [Tiger Katze = 7.92]; [Tiger Katze = 6.92]
+# Removed 1 self-pair row(s) (word paired with itself), forbidden by the dataset linter: [Tiger Tiger]
+# rows before cleaning: 201; rows after: 196.
 Flugzeug  Auto  4.92
 Zug  Auto  5.54
 Fernseher  Radio  5.77
@@ -18,7 +23,6 @@ Vorrat  Ei  2.15
 Aktie  Live  1.08
 Aktie  Leben  0.62
 Holz  Wald  8.54
-Geld  Bargeld  9.69
 Professor  Gurke  0.15
 König  Kohl  0.23
 König  Königin  10
@@ -63,11 +67,9 @@ Glas  Magier  1.69
 Mittag  Faden  0.15
 Hahn  Reise  0.31
 Geld  Dollar  7.92
-Geld  Bargeld  9.19
 Geld  Währung  8.12
 Geld  Wäsche  3.62
 Tiger  Jaguar  6
-Tiger  Katze  6.92
 Tiger  Raubtier  8
 Tiger  Säugetier  6.58
 Tiger  Tier  7.85

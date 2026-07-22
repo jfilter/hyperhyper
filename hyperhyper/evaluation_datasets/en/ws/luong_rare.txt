@@ -1,9 +1,34 @@
+# curated-v2 data cleaning per ADR 0001 (P0); applied 2026-07-22. Only rows were removed; no gold score was altered or averaged.
+# These comment lines are ignored by the parser (setup_test_tokens keeps only 3-field lines; none of these lines have exactly three fields).
+# Dropped BOTH rows of 1 conflicting-duplicate pair(s) -- same (case/order-insensitive) pair with differing aggregate scores. ADR rule: two unexplained aggregates are dropped, never averaged.
+#   dropped-conflict: [rediscovery discovery = 6.6]; [discovery rediscovery = 7.5]
+# Removed 20 multi-token row(s) whose entry splits into >1 token under package preprocessing (tokenize_string), so the scorer can never represent them (they only inflated oov):
+#   removed-multitoken: [provincialism narrow-mindedness = 8.11] (entry 'narrow-mindedness' -> ['narrow', 'mindedness'])
+#   removed-multitoken: [unsighted color-blind = 5.29] (entry 'color-blind' -> ['color', 'blind'])
+#   removed-multitoken: [reasoning re-argue = 4] (entry 're-argue' -> ['re', 'argue'])
+#   removed-multitoken: [illiberal narrow-minded = 8.86] (entry 'narrow-minded' -> ['narrow', 'minded'])
+#   removed-multitoken: [snookered flim-flam = 8] (entry 'flim-flam' -> ['flim', 'flam'])
+#   removed-multitoken: [reenact re-create = 8.67] (entry 're-create' -> ['re', 'create'])
+#   removed-multitoken: [nonfunctional run-down = 7.6] (entry 'run-down' -> ['run', 'down'])
+#   removed-multitoken: [fulfillments self-fulfillment = 8.56] (entry 'self-fulfillment' -> ['self', 'fulfillment'])
+#   removed-multitoken: [continence self-discipline = 4.83] (entry 'self-discipline' -> ['self', 'discipline'])
+#   removed-multitoken: [newness brand-newness = 8.6] (entry 'brand-newness' -> ['brand', 'newness'])
+#   removed-multitoken: [mccarthyism witch-hunt = 8.17] (entry 'witch-hunt' -> ['witch', 'hunt'])
+#   removed-multitoken: [defrauding short-change = 7] (entry 'short-change' -> ['short', 'change'])
+#   removed-multitoken: [fashionable up-to-date = 8.33] (entry 'up-to-date' -> ['up', 'to', 'date'])
+#   removed-multitoken: [methodically know-how = 5.6] (entry 'know-how' -> ['know', 'how'])
+#   removed-multitoken: [autosuggestion self-improvement = 4] (entry 'self-improvement' -> ['self', 'improvement'])
+#   removed-multitoken: [conjoins cross-link = 7.83] (entry 'cross-link' -> ['cross', 'link'])
+#   removed-multitoken: [indexical cross-index = 5.6] (entry 'cross-index' -> ['cross', 'index'])
+#   removed-multitoken: [discoverys self-discovery = 6.33] (entry 'self-discovery' -> ['self', 'discovery'])
+#   removed-multitoken: [replacements stand-in = 9.25] (entry 'stand-in' -> ['stand', 'in'])
+#   removed-multitoken: [invariable hard-and-fast = 6.57] (entry 'hard-and-fast' -> ['hard', 'and', 'fast'])
+# rows before cleaning: 2034; rows after: 2012.
 squishing	squirt	5.88
 undated	undatable	5.83
 circumvents	beat	5.33
 circumvents	ebb	3.25
 dispossess	deprive	6.83
-provincialism	narrow-mindedness	8.11
 provincialism	partiality	4.5
 instrumentality	department	3
 instrumentality	utility	7.29
@@ -29,7 +54,6 @@ principality	domain	7.62
 vicarious	abnormal	0.12
 vicarious	secondary	6.5
 ungraceful	awkward	8.5
-unsighted	color-blind	5.29
 socialise	educate	6.12
 socialise	swing	1
 diagonals	line	7.57
@@ -144,7 +168,6 @@ confluent	branch	4.2
 confluent	convergent	6.29
 anterooms	building	6.14
 reasoning	deduce	8
-reasoning	re-argue	4
 summonings	page	5.43
 summonings	demand	7.14
 preordained	predetermine	8.5
@@ -226,7 +249,6 @@ impotently	ineffective	8.67
 deviationism	desertion	3
 capitation	tax	6
 denominate	label	5.71
-illiberal	narrow-minded	8.86
 periodical	nightly	5.8
 periodical	publication	9.14
 distillate	liquid	8
@@ -279,7 +301,6 @@ clamorous	noisy	9.44
 baseness	unworthiness	4
 serenaded	perform	7.12
 snookered	play	5
-snookered	flim-flam	8
 immeasurable	incalculable	9.33
 immeasurable	illimitable	8.43
 encroachments	inroad	6
@@ -296,7 +317,6 @@ papered	cover	6.71
 territorials	soldier	5.6
 territorials	guard	6.29
 publicise	tell	8.29
-reenact	re-create	8.67
 reenact	ordain	1.67
 interstellar	major	7
 scattered	separate	8
@@ -672,7 +692,6 @@ interdisciplinary	nonindulgent	4.25
 nonverbally	numerical	4
 pressurise	change	5.57
 measurements	viscometry	4.4
-nonfunctional	run-down	7.6
 severer	intense	8.25
 brainless	unintelligent	9.67
 marinate	steep	7.14
@@ -776,7 +795,6 @@ uncontrolled	rampant	9.5
 selectively	exclusive	8.57
 selectively	discriminating	8.4
 fulfillments	satisfaction	8.43
-fulfillments	self-fulfillment	8.56
 premeditation	planning	8.8
 stewardship	position	5.8
 residing	populate	6.33
@@ -841,7 +859,6 @@ unfavourable	adverse	8.2
 unfavourable	discriminatory	6.33
 vocalism	voice	7.67
 vocalism	system	0.67
-continence	self-discipline	4.83
 immoderate	excessive	7.5
 internships	position	7.17
 translunar	heavenly	6.67
@@ -851,7 +868,6 @@ importance	primacy	7.17
 jarringly	move	3.86
 jarringly	conflict	2.6
 affectional	emotional	7.83
-rediscovery	discovery	6.6
 microfossils	fossil	7.25
 unknowing	ignorance	8.17
 unknowing	uninformed	8.14
@@ -865,7 +881,6 @@ ceramicist	craftsman	6.57
 teaspoonful	containerful	5.17
 migrational	emigration	8
 migrational	people	4.5
-newness	brand-newness	8.6
 circumscribes	content	2.75
 rudderless	purposeless	6.38
 internationaler	foreign	7.8
@@ -1055,7 +1070,6 @@ carbonate	process	3.71
 carbonate	change	2.33
 disturbances	magnetic	0.75
 disturbances	agitation	8.5
-mccarthyism	witch-hunt	8.17
 titillated	please	5.67
 titillated	itch	0.88
 fetishism	belief	3.4
@@ -1123,7 +1137,6 @@ designed	intend	5
 designed	mental	1.25
 behavioural	action	5.33
 behavioural	propriety	1
-defrauding	short-change	7
 procurators	bureaucrat	4.83
 procurators	agent	5.67
 assistances	resource	4.83
@@ -1225,14 +1238,12 @@ eroticism	desire	6.67
 caesarism	autocracy	7.43
 sessions	quarter	5.57
 sessions	sitting	4.43
-fashionable	up-to-date	8.33
 teasingly	torment	7.43
 teasingly	kid	8.62
 microwaving	cook	7.86
 transverse	crosswise	8.17
 managership	position	7.67
 methodically	acting	4.5
-methodically	know-how	5.6
 excitements	fever	6.29
 excitements	intoxication	4.33
 christianise	convert	7
@@ -1291,7 +1302,6 @@ physically	bodily	8.44
 unceremonious	informal	8.43
 unceremonious	discourteous	7
 postcodes	code	6.17
-autosuggestion	self-improvement	4
 circumventing	beat	5.33
 circumventing	ebb	1.29
 homoerotic	homosexual	7.12
@@ -1432,7 +1442,6 @@ wrathful	angry	8.67
 cowboys	performer	0.71
 cowboys	ranch	7.33
 conjoins	intermarry	8.67
-conjoins	cross-link	7.83
 predominance	obviousness	4.17
 predominance	dominance	6.62
 brandish	expose	9
@@ -1695,7 +1704,6 @@ insecurities	insecureness	8.78
 insecurities	anxiety	8.67
 repeating	replicate	9.25
 churchs	perform	0.5
-discovery	rediscovery	7.5
 discovery	disclosure	3.83
 submerging	cover	7.67
 submerging	sink	9.38
@@ -1718,7 +1726,6 @@ suspenseful	tense	9
 banished	expel	10
 relocation	transportation	6.57
 relocation	change	6.14
-indexical	cross-index	5.6
 indexical	supply	1.12
 absconding	flee	7.86
 encoded	code	6.5
@@ -1728,7 +1735,6 @@ prejudge	evaluate	5.33
 genuinely	sincere	9.25
 genuinely	attested	4.8
 discoverys	disclosure	1.5
-discoverys	self-discovery	6.33
 palestinians	arab	6.67
 parasitical	dependent	7.29
 interconnect	intercommunicate	7
@@ -1788,7 +1794,6 @@ observed	comment	5.71
 observed	discover	6.83
 hydrolysed	change	5.43
 enjoins	instruct	5
-replacements	stand-in	9.25
 replacements	supplanting	6
 bengali	ethnic	6.38
 transsexual	person	8
@@ -1971,7 +1976,6 @@ poisoning	corrupt	7.25
 poisoning	poison	9.62
 bobbers	float	9
 portrayer	painter	7.29
-invariable	hard-and-fast	6.57
 invariable	parameter	3.6
 constrict	astringe	6.33
 constrict	choke	8.4

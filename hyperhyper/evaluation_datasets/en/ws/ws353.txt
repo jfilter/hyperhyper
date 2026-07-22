@@ -1,6 +1,12 @@
+# curated-v2 data cleaning per ADR 0001 (P0); applied 2026-07-22. Only rows were removed; no gold score was altered or averaged.
+# These comment lines are ignored by the parser (setup_test_tokens keeps only 3-field lines; none of these lines have exactly three fields).
+# Dropped BOTH rows of 2 conflicting-duplicate pair(s) -- same (case/order-insensitive) pair with differing aggregate scores. ADR rule: two unexplained aggregates are dropped, never averaged.
+#   dropped-conflict: [bank money = 8.12]; [money bank = 8.50]
+#   dropped-conflict: [money cash = 9.15]; [money cash = 9.08]
+# Removed 1 self-pair row(s) (word paired with itself), forbidden by the dataset linter: [tiger tiger]
+# rows before cleaning: 353; rows after: 348.
 love	sex	6.77
 tiger	cat	7.35
-tiger	tiger	10.00
 book	paper	7.46
 computer	keyboard	7.62
 computer	internet	7.58
@@ -27,9 +33,7 @@ fertility	egg	6.69
 stock	live	3.73
 stock	life	0.92
 book	library	7.46
-bank	money	8.12
 wood	forest	7.73
-money	cash	9.15
 professor	cucumber	0.31
 king	cabbage	0.23
 king	queen	8.58
@@ -95,12 +99,10 @@ glass	magician	2.08
 noon	string	0.54
 rooster	voyage	0.62
 money	dollar	8.42
-money	cash	9.08
 money	currency	9.04
 money	wealth	8.27
 money	property	7.57
 money	possession	7.29
-money	bank	8.50
 money	deposit	7.73
 money	withdrawal	6.88
 money	laundering	5.65

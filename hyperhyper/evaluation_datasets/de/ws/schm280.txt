@@ -1,8 +1,18 @@
+# curated-v2 data cleaning per ADR 0001 (P0); applied 2026-07-22. Only rows were removed; no gold score was altered or averaged.
+# These comment lines are ignored by the parser (setup_test_tokens keeps only 3-field lines; none of these lines have exactly three fields).
+# Dropped BOTH rows of 4 conflicting-duplicate pair(s) -- same (case/order-insensitive) pair with differing aggregate scores. ADR rule: two unexplained aggregates are dropped, never averaged.
+#   dropped-conflict: [psychologie angst = 7.4]; [psychologie angst = 7.3]
+#   dropped-conflict: [geld bargeld = 8.9]; [geld bargeld = 9]
+#   dropped-conflict: [tiger katze = 8.2]; [tiger katze = 8]
+#   dropped-conflict: [küste wald = 4.2]; [küste wald = 5.4]
+# Collapsed 1 exact-duplicate pair(s) (same pair, same score) to a single row; kept first occurrence.
+#   collapsed-exact: kept [bank geld = 7.9]; removed [geld bank = 7.9]
+# Removed 3 self-pair row(s) (word paired with itself), forbidden by the dataset linter: [tiger tiger]; [dollar dollar]; [fußball fußball]
+# rows before cleaning: 280; rows after: 268.
 psychologie geist	7.2
 fünf monat	3.2
 planet galaxie	8.3
 wodka gin	7.8
-tiger katze	8.2
 auto flug	6.1
 ankunft hotel	6.2
 könig königin	9.4
@@ -75,7 +85,6 @@ buch bücherei	8.1
 krieg truppen	7.6
 spiel serie	2.8
 tasse nahrung	3.9
-psychologie angst	7.4
 psychologie freud	8.2
 spiel mannschaft	7.4
 beobachtung architektur	2
@@ -100,12 +109,9 @@ kredit karte	6.1
 verzögerung rassismus	1.3
 tasse flüssig	6.1
 problem herausforderung	7.1
-geld bargeld	8.9
 ministerium kultur	6
 wort ähnlichkeit	1.7
-geld bank	7.9
 oper industrie	1.8
-tiger katze	8
 regierung krise	6.3
 glas zauberer	1.4
 trinken auto	1
@@ -127,18 +133,15 @@ opfer notfall	6.3
 lebensmittelgeschäft geld	6.2
 straße allee	8.3
 tasse einheit	2.1
-küste wald	4.2
 musik projekt	3.2
 geld eigentum	5.8
 medien handel	1.9
 gouverneur amt	5.8
 ausrüstung hersteller	4.5
 dividend berechnung	6
-tiger tiger	10
 minister partei	7.5
 anfang jahr	5.2
 tag sommer	4.2
-dollar dollar	9.9
 entdeckung weltraum	6.2
 film popcorn	7
 getränk ohr	0.6
@@ -161,7 +164,6 @@ film kino	8.4
 zug auto	7.6
 aluminium metall	8.4
 computer internet	8.3
-geld bargeld	9
 ausschuss empfehlung	4.3
 küste hügel	5.3
 fernsehen film	7.8
@@ -205,7 +207,6 @@ straße ort	6
 tiger tier	7.8
 flüssigkeit wasser	8.4
 haftung versicherung	7
-küste wald	5.4
 mann gouverneur	6.1
 gebiet kilometer	4.2
 marathon spring	3.9
@@ -247,7 +248,6 @@ mord totschlag	7.9
 planet weltraum	8.1
 könig turm	5.3
 präsident medaille	2.9
-psychologie angst	7.3
 jaguar katze	8.1
 opec öl	7.3
 student professor	7.1
@@ -274,7 +274,6 @@ physik proton	7.9
 harvard yale	7.7
 tennis schläger	7
 tiger fleischfresser	7.1
-fußball fußball	9.9
 architektur jahrhundert	4
 hundert prozent	6.4
 brot butter	6.7

@@ -1,3 +1,8 @@
+# curated-v2 data cleaning per ADR 0001 (P0); applied 2026-07-22. Only rows were removed; no gold score was altered or averaged.
+# These comment lines are ignored by the parser (setup_test_tokens keeps only 3-field lines; none of these lines have exactly three fields).
+# Dropped BOTH rows of 1 conflicting-duplicate pair(s) -- same (case/order-insensitive) pair with differing aggregate scores. ADR rule: two unexplained aggregates are dropped, never averaged.
+#   dropped-conflict: [Bank Geld = 8.15]; [Geld Bank = 8.31]
+# rows before cleaning: 252; rows after: 250.
 Liebe  Sex  8.46
 Buch  Papier  7.08
 Computer  Tastatur  8
@@ -15,7 +20,6 @@ Fruchtbarkeit  Ei  7.92
 Aktie  Live  1.08
 Aktie  Leben  0.62
 Buch  Bibliothek  8.31
-Bank  Geld  8.15
 Professor  Gurke  0.15
 König  Kohl  0.23
 Jerusalem  Israel  8.85
@@ -58,7 +62,6 @@ Hahn  Reise  0.31
 Geld  Reichtum  8.19
 Geld  Eigentum  6.62
 Geld  Besitz  6.92
-Geld  Bank  8.31
 Geld  Pfand  5.13
 Geld  Einzahlung  6.23
 Geld  Abheben  6.54

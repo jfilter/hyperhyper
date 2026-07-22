@@ -1,3 +1,8 @@
+# curated-v2 data cleaning per ADR 0001 (P0); applied 2026-07-22. Only rows were removed; no gold score was altered or averaged.
+# These comment lines are ignored by the parser (setup_test_tokens keeps only 3-field lines; none of these lines have exactly three fields).
+# Dropped BOTH rows of 1 conflicting-duplicate pair(s) -- same (case/order-insensitive) pair with differing aggregate scores. ADR rule: two unexplained aggregates are dropped, never averaged.
+#   dropped-conflict: [money bank = 8.50]; [bank money = 8.12]
+# rows before cleaning: 252; rows after: 250.
 computer	keyboard	7.62
 Jerusalem	Israel	8.46
 planet	galaxy	8.11
@@ -10,7 +15,6 @@ planet	people	5.75
 environment	ecology	8.81
 Maradona	football	8.62
 OPEC	oil	8.59
-money	bank	8.50
 computer	software	8.50
 law	lawyer	8.38
 weather	forecast	8.34
@@ -22,7 +26,6 @@ psychology	Freud	8.21
 news	report	8.16
 war	troops	8.13
 physics	proton	8.12
-bank	money	8.12
 stock	market	8.08
 planet	constellation	8.06
 credit	card	8.06

@@ -1,3 +1,8 @@
+# curated-v2 data cleaning per ADR 0001 (P0); applied 2026-07-22. Only rows were removed; no gold score was altered or averaged.
+# These comment lines are ignored by the parser (setup_test_tokens keeps only 3-field lines; none of these lines have exactly three fields).
+# Dropped BOTH rows of 1 conflicting-duplicate pair(s) -- same (case/order-insensitive) pair with differing aggregate scores. ADR rule: two unexplained aggregates are dropped, never averaged.
+#   dropped-conflict: [gasoline stock = 2.888888889]; [stock gasoline = 3.166666667]
+# rows before cleaning: 287; rows after: 285.
 episcopal	russia	2.75
 water	shortage	2.714285714
 horse	wedding	2.266666667
@@ -230,7 +235,6 @@ homer	springfield	2.833333333
 coin	awards	2.166666667
 rhodes	native	2.25
 soccer	curator	2.125
-gasoline	stock	2.888888889
 guilt	extended	2.105263158
 rapid	singapore	1.764705882
 coin	banker	3.631578947
@@ -244,7 +248,6 @@ earth	poles	3.421052632
 thailand	crowded	2.166666667
 day	independence	3.473684211
 controversy	pitch	2.375
-stock	gasoline	3.166666667
 composers	mozart	3.833333333
 tone	piano	3.722222222
 paris	chef	2.111111111

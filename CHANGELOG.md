@@ -7,6 +7,21 @@ Everything below is user-visible; several items change numeric results.
 
 ### Added
 
+Evaluation data and tooling (ADR 0001, phases P0/P1):
+
+-   **Evaluate on your own datasets.** `eval_similarity` / `eval_analogies` (and
+    `Bunch.eval_sim` / `Bunch.eval_analogy`) take an optional `data_dir` pointing
+    at your own `ws/` / `analogy/` files in the same format, evaluated alongside
+    the bundled sets (`include_bundled=False` to use only yours). The biggest
+    lever for the small-domain corpora this package targets.
+-   **Coverage report.** `Bunch.dataset_coverage(kind=...)` /
+    `evaluation.dataset_coverage(...)` report, per dataset, the fraction of rows
+    fully in-vocabulary under the evaluator's own preprocessing — so you can tell
+    before training which sets are usable for your corpus.
+-   **A dataset linter** (`tests/test_datasets.py`) that gates every bundled file
+    (and any future one) on field count, parseable scores, no duplicate/self
+    pairs, single-token entries, and answerable analogy rows.
+
 Three hyperparameters from Levy, Goldberg & Dagan (2015) that were missing on
 the count side. All default to the previous behaviour, so existing results and
 caches for the old settings are unchanged.
@@ -124,6 +139,25 @@ caches for the old settings are unchanged.
     versions cannot be compared against new ones.
 
 ### Fixed
+
+-   **Similarity/analogy micro and macro averages double-counted shared items.**
+    The WordSim353 similarity/relatedness files are subsets of `ws353`, and many
+    other bundled sets partially overlap (verified: 462 of the 6097 English
+    similarity pair-rows were duplicates across files, and German/analogy sets
+    overlap too), yet the aggregates pooled every file — so those judgements were
+    weighted two-to-three times. Each unique pair (similarity) or quadruple
+    (analogy) is now counted once; a set fully redundant with an earlier one is
+    excluded from micro **and** macro but still reported individually. Per-dataset
+    `score`/`oov`/`fullscore` are unchanged. This moves the reported micro/macro
+    numbers — the old ones were wrong.
+-   **The bundled evaluation datasets carried bad rows.** Conflicting duplicate
+    pairs (the same pair with two different gold scores, across ~7 similarity
+    files), exact duplicate rows, self-pairs, and ~1000 multi-word/hyphenated
+    entries the scorer silently could not represent (which inflated `oov`). All
+    removed — rows only, no gold score altered or averaged — with the reason
+    recorded as `#`-comment provenance in each file. Row-count deltas per file are
+    in the commit. Old numbers are preserved in git history, not a parallel suite,
+    since this release already changes evaluation results wholesale.
 
 -   **`svd()` was non-deterministic when `dim` exceeded the matrix rank.** Past
     the numerical rank the extra singular values are ~0 and their singular

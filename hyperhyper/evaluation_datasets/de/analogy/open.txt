@@ -1,3 +1,8 @@
+# curated-v2 data cleaning per ADR 0001 (P0); applied 2026-07-22. Only rows were removed; no gold answer was altered.
+# These comment lines are ignored by the parser (setup_test_tokens keeps only 4-field lines; none of these lines have exactly four fields).
+# Removed 19 row(s) whose answer b_ equals one of the query words a/a_/b (unanswerable: the scorer excludes a,a_,b, so such a row can never be scored correct).
+# Collapsed 15 exact-duplicate row(s) (same four tokens, case-insensitive) to a single occurrence; kept first.
+# rows before cleaning: 539; rows after: 505.
 China Yuan Deutschland Euro
 China Yuan Dänemark Krone
 China Yuan England Pfund
@@ -245,44 +250,28 @@ China Asien Deutschland Europa
 China Asien England Europa
 China Asien Frankreich Europa
 China Asien Griechenland Europa
-China Asien Indien Asien
 China Asien Italien Europa
 China Asien Kanada Nordamerika
 China Asien Polen Europa
 China Asien USA Nordamerika
-China Asien Vietnam Asien
 China Asien Ägypten Afrika
-Deutschland Europa England Europa
-Deutschland Europa Frankreich Europa
-Deutschland Europa Griechenland Europa
 Deutschland Europa Indien Asien
-Deutschland Europa Italien Europa
 Deutschland Europa Kanada Nordamerika
-Deutschland Europa Polen Europa
 Deutschland Europa USA Nordamerika
 Deutschland Europa Vietnam Asien
 Deutschland Europa Ägypten Afrika
-England Europa Frankreich Europa
-England Europa Griechenland Europa
 England Europa Indien Asien
-England Europa Italien Europa
 England Europa Kanada Nordamerika
-England Europa Polen Europa
 England Europa USA Nordamerika
 England Europa Vietnam Asien
 England Europa Ägypten Afrika
-Frankreich Europa Griechenland Europa
 Frankreich Europa Indien Asien
-Frankreich Europa Italien Europa
 Frankreich Europa Kanada Nordamerika
-Frankreich Europa Polen Europa
 Frankreich Europa USA Nordamerika
 Frankreich Europa Vietnam Asien
 Frankreich Europa Ägypten Afrika
 Griechenland Europa Indien Asien
-Griechenland Europa Italien Europa
 Griechenland Europa Kanada Nordamerika
-Griechenland Europa Polen Europa
 Griechenland Europa USA Nordamerika
 Griechenland Europa Vietnam Asien
 Griechenland Europa Ägypten Afrika
@@ -290,15 +279,12 @@ Indien Asien Italien Europa
 Indien Asien Kanada Nordamerika
 Indien Asien Polen Europa
 Indien Asien USA Nordamerika
-Indien Asien Vietnam Asien
 Indien Asien Ägypten Afrika
 Italien Europa Kanada Nordamerika
-Italien Europa Polen Europa
 Italien Europa USA Nordamerika
 Italien Europa Vietnam Asien
 Italien Europa Ägypten Afrika
 Kanada Nordamerika Polen Europa
-Kanada Nordamerika USA Nordamerika
 Kanada Nordamerika Vietnam Asien
 Kanada Nordamerika Ägypten Afrika
 Polen Europa USA Nordamerika
@@ -406,7 +392,6 @@ Bruder Schwester Bräutigam Braut
 Bruder Schwester Ehemann Ehefrau
 Bruder Schwester Enkel Enkelin
 Bruder Schwester er sie
-Bruder Schwester Er Sie
 Bruder Schwester Großvater Großmutter
 Bruder Schwester Junge Mädchen
 Bruder Schwester König Königin
@@ -421,7 +406,6 @@ Bruder Schwester Vater Mutter
 Bräutigam Braut Ehemann Ehefrau
 Bräutigam Braut Enkel Enkelin
 Bräutigam Braut er sie
-Bräutigam Braut Er Sie
 Bräutigam Braut Großvater Großmutter
 Bräutigam Braut Junge Mädchen
 Bräutigam Braut König Königin
@@ -435,7 +419,6 @@ Bräutigam Braut Prinz Prinzessin
 Bräutigam Braut Vater Mutter
 Ehemann Ehefrau Enkel Enkelin
 Ehemann Ehefrau er sie
-Ehemann Ehefrau Er Sie
 Ehemann Ehefrau Großvater Großmutter
 Ehemann Ehefrau Junge Mädchen
 Ehemann Ehefrau König Königin
@@ -448,7 +431,6 @@ Ehemann Ehefrau Partner Partnerin
 Ehemann Ehefrau Prinz Prinzessin
 Ehemann Ehefrau Vater Mutter
 Enkel Enkelin er sie
-Enkel Enkelin Er Sie
 Enkel Enkelin Großvater Großmutter
 Enkel Enkelin Junge Mädchen
 Enkel Enkelin König Königin
@@ -471,17 +453,6 @@ er sie Papa Mama
 er sie Partner Partnerin
 er sie Prinz Prinzessin
 er sie Vater Mutter
-Er Sie Großvater Großmutter
-Er Sie Junge Mädchen
-Er Sie König Königin
-Er Sie Mann Frau
-Er Sie männlich weiblich
-Er Sie Neffe Nichte
-Er Sie Onkel Tante
-Er Sie Papa Mama
-Er Sie Partner Partnerin
-Er Sie Prinz Prinzessin
-Er Sie Vater Mutter
 Großvater Großmutter Junge Mädchen
 Großvater Großmutter König Königin
 Großvater Großmutter Mann Frau

@@ -7,6 +7,7 @@ that only checks "no exception was raised" is useless here: the analogy
 evaluation used to return a constant 0.0 and such a test passed happily.
 """
 
+import hashlib
 from concurrent import futures
 
 import numpy as np
@@ -64,7 +65,11 @@ def use_dataset(monkeypatch):
     """
 
     def _use(path):
-        monkeypatch.setattr(evaluation, "read_test_data", lambda lang, kind: [path])
+        # accept the `data_dir`/`include_bundled` kwargs the real
+        # `read_test_data` now takes, so the callers can still pass them
+        monkeypatch.setattr(
+            evaluation, "read_test_data", lambda lang, kind, **kwargs: [path]
+        )
 
     return _use
 
@@ -665,3 +670,378 @@ def test_parallel_preprocessing_does_not_change_any_score(
     assert serial["micro"] == pytest.approx(0.8660254037844387)
     assert thresholded == serial
     assert thresholded == pooled
+
+
+# de-duplicated aggregation (TASK 1: the micro double-counting bug)
+
+
+@pytest.fixture()
+def use_datasets(monkeypatch):
+    """
+    Point `read_test_data` at several files we control, in a fixed order.
+
+    Unlike `use_dataset`, this is what exercises the cross-dataset
+    de-duplication: the aggregation only counts a word pair once even when a
+    later dataset repeats it.
+    """
+
+    def _use(paths):
+        monkeypatch.setattr(
+            evaluation, "read_test_data", lambda lang, kind, **kwargs: list(paths)
+        )
+
+    return _use
+
+
+def test_micro_counts_a_shared_pair_once(tmp_path, toy_embedding, use_datasets):
+    """
+    Regression test for the WordSim353 double-counting bug (ADR 0001, TASK 1).
+
+    `ws353_similarity`/`ws353_relatedness` are complete subsets of `ws353`, so
+    the old line-weighted micro folded every shared pair in two or three times.
+    Here `subset`'s two pairs are a strict subset of `parent`'s three, and the
+    two datasets are deliberately scored differently (Spearman -1.0 vs +1.0).
+
+    Old (buggy) micro = (3*-1.0 + 2*+1.0) / 5 = -0.2, macro = 0.0.
+    Fixed: `parent` sorts first and claims all three pairs, so `subset` adds no
+    new pair, gets weight 0 and is dropped from micro AND macro -- while still
+    being reported. Micro and macro are therefore `parent`'s score, -1.0.
+    """
+    parent = write_dataset(
+        tmp_path,
+        "aaa_parent",
+        # gold ascends 1<2<3 while the cosines descend (0.707>0.5>0.0): Spearman -1
+        ["athens greece 1", "greece iraq 2", "athens iraq 3"],
+    )
+    subset = write_dataset(
+        tmp_path,
+        "aaa_subset",
+        # the same two pairs, gold now agreeing with the cosines: Spearman +1
+        ["athens greece 9", "greece iraq 5"],
+    )
+    use_datasets([parent, subset])
+
+    res = evaluation.eval_similarity(toy_embedding, TOKEN2ID, tokenize_texts)
+
+    # every dataset is still reported individually
+    assert {r["name"] for r in res["results"]} == {"en_aaa_parent", "en_aaa_subset"}
+    scores = {r["name"]: r["score"] for r in res["results"]}
+    assert scores["en_aaa_parent"] == pytest.approx(-1.0)
+    assert scores["en_aaa_subset"] == pytest.approx(1.0)
+
+    # the shared pairs are counted once: the redundant subset drops out of the
+    # pool, so micro/macro are the parent's score alone -- not the buggy -0.2/0.0
+    assert res["micro"] == pytest.approx(-1.0)
+    assert res["macro"] == pytest.approx(-1.0)
+
+
+class RandomSimilarity:
+    """
+    A deterministic pseudo-random cosine for every unordered id pair.
+
+    Enough to give each real WordSim353 dataset a *different* Spearman score, so
+    a test can tell whether the redundant subsets were folded into the pool.
+    """
+
+    def similarity(self, i, j):
+        a, b = sorted((int(i), int(j)))
+        digest = hashlib.blake2b(f"{a}-{b}".encode(), digest_size=4).hexdigest()
+        return int(digest, 16) / 0xFFFFFFFF * 2 - 1
+
+
+def _in_vocab_pairs(path, token2id):
+    """
+    The unordered word pairs of a similarity file that are fully in-vocabulary,
+    in the read order and *keeping* within-file repeats -- so `len(...)` is the
+    row count the old line-weighted micro used and `set(...)` is the unique-pair
+    count the fixed micro uses.
+    """
+    t1, t2, _ = evaluation.setup_test_tokens(path, 3)
+    t1, t2 = tokenize_texts(t1), tokenize_texts(t2)
+    pairs = []
+    for x, y in zip(t1, t2, strict=True):
+        x, y = evaluation.to_item(x), evaluation.to_item(y)
+        if x in token2id and y in token2id:
+            pairs.append(frozenset((token2id[x], token2id[y])))
+    return pairs
+
+
+def test_real_overlapping_ws353_split_is_deduplicated(use_datasets):
+    """
+    On real data with a real overlap: `ws353_similarity` and
+    `ws353_relatedness` are the Agirre split and share ~100 pairs. The fixed
+    micro must weight the second file only by the pairs the first did not
+    already contribute, and that must differ from the old line-weighted micro
+    (which summed both raw row counts, folding the shared pairs in twice).
+
+    This does not assume an exact subset relationship, so it stays valid as the
+    bundled files are curated -- it only needs the two files to overlap and to
+    be scored differently, which `RandomSimilarity` guarantees.
+    """
+    ws = {evaluation.data_name(p): p for p in evaluation.read_test_data("en", "ws")}
+    sim, rel = ws["ws353_similarity"], ws["ws353_relatedness"]
+
+    # a token2id covering every word the two files mention, so oov is minimal
+    # and both datasets are scored
+    token2id = {}
+    for path in (sim, rel):
+        t1, t2, _ = evaluation.setup_test_tokens(path, 3)
+        for col in (tokenize_texts(t1), tokenize_texts(t2)):
+            for token in col:
+                token = evaluation.to_item(token)
+                if token is not None:
+                    token2id.setdefault(token, len(token2id))
+
+    vectors = RandomSimilarity()
+
+    use_datasets([sim, rel])
+    res = evaluation.eval_similarity(vectors, token2id, tokenize_texts)
+
+    # both datasets are still reported, with genuinely different scores
+    by_name = {r["name"]: r["score"] for r in res["results"]}
+    assert set(by_name) == {"en_ws353_similarity", "en_ws353_relatedness"}
+    assert by_name["en_ws353_similarity"] != pytest.approx(
+        by_name["en_ws353_relatedness"]
+    )
+
+    sim_pairs, rel_pairs = (
+        _in_vocab_pairs(sim, token2id),
+        _in_vocab_pairs(rel, token2id),
+    )
+    overlap = len(set(sim_pairs) & set(rel_pairs))
+    assert overlap > 0  # the whole point: these two files really do share pairs
+
+    # the fixed micro weights `rel` only by its *new* pairs
+    seen = set(sim_pairs)
+    w_sim = len(set(sim_pairs))
+    w_rel = len(set(rel_pairs) - seen)
+    expected = (
+        w_sim * by_name["en_ws353_similarity"] + w_rel * by_name["en_ws353_relatedness"]
+    ) / (w_sim + w_rel)
+    assert res["micro"] == pytest.approx(expected)
+
+    # the old, buggy line-weighted micro counted every shared pair twice
+    old_buggy = (
+        len(sim_pairs) * by_name["en_ws353_similarity"]
+        + len(rel_pairs) * by_name["en_ws353_relatedness"]
+    ) / (len(sim_pairs) + len(rel_pairs))
+    assert res["micro"] != pytest.approx(old_buggy)
+
+
+def test_identical_dataset_repeated_is_counted_once(use_datasets):
+    """
+    The dedup extreme, on the real `ws353` file: evaluating it twice must give
+    the same micro/macro as evaluating it once, because the repeat adds no new
+    pair. Robust to curation -- it only reads one file and compares it to a copy
+    of itself.
+    """
+    ws = {evaluation.data_name(p): p for p in evaluation.read_test_data("en", "ws")}
+    parent = ws["ws353"]
+
+    token2id = {}
+    t1, t2, _ = evaluation.setup_test_tokens(parent, 3)
+    for col in (tokenize_texts(t1), tokenize_texts(t2)):
+        for token in col:
+            token = evaluation.to_item(token)
+            if token is not None:
+                token2id.setdefault(token, len(token2id))
+
+    vectors = RandomSimilarity()
+
+    use_datasets([parent])
+    once = evaluation.eval_similarity(vectors, token2id, tokenize_texts)
+    use_datasets([parent, parent])
+    twice = evaluation.eval_similarity(vectors, token2id, tokenize_texts)
+
+    assert len(twice["results"]) == 2  # still reported twice
+    assert twice["micro"] == pytest.approx(once["micro"])
+    assert twice["macro"] == pytest.approx(once["macro"])
+
+
+# user-supplied data (TASK 2: data_dir)
+
+
+def write_kind_dataset(root, lang, kind, name, lines, *, nested):
+    """
+    Write a dataset into a `data_dir`, either the bundle-mirroring
+    `<root>/<lang>/<kind>/` layout or the flat `<root>/<kind>/` one.
+    """
+    directory = (root / lang / kind) if nested else (root / kind)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.txt"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("nested", [True, False], ids=["lang-nested", "flat"])
+def test_data_dir_evaluates_user_supplied_dataset(tmp_path, toy_embedding, nested):
+    """
+    TASK 2: a user points `data_dir` at their own `ws/` files and they are
+    evaluated. `include_bundled=False` restricts scoring to just those files.
+    """
+    write_kind_dataset(
+        tmp_path,
+        "en",
+        "ws",
+        "domain",
+        ["athens greece 9", "greece iraq 5", "athens iraq 1"],
+        nested=nested,
+    )
+
+    res = evaluation.eval_similarity(
+        toy_embedding,
+        TOKEN2ID,
+        tokenize_texts,
+        data_dir=tmp_path,
+        include_bundled=False,
+    )
+
+    (result,) = res["results"]
+    assert result["name"] == "en_domain"
+    assert result["score"] == pytest.approx(1.0)
+    assert res["micro"] == pytest.approx(1.0)
+
+
+def test_data_dir_evaluates_alongside_bundled_by_default(tmp_path, toy_embedding):
+    """
+    The default is `include_bundled=True`: the user's set is evaluated
+    *alongside* the bundled ones. The toy vocabulary shares no word with the
+    real English sets, so those are skipped as out-of-vocabulary and only the
+    custom set is scored -- but it is the read_test_data merge, not a
+    replacement, that put it there (the bundled files were attempted).
+    """
+    write_kind_dataset(
+        tmp_path,
+        "en",
+        "ws",
+        "domain",
+        ["athens greece 9", "greece iraq 5"],
+        nested=True,
+    )
+
+    merged = evaluation.read_test_data("en", "ws", data_dir=tmp_path)
+    bundled = evaluation.read_test_data("en", "ws")
+    assert len(merged) == len(bundled) + 1
+    assert "domain.txt" in {p.name for p in merged}
+
+    res = evaluation.eval_similarity(
+        toy_embedding, TOKEN2ID, tokenize_texts, data_dir=tmp_path
+    )
+    assert "en_domain" in {r["name"] for r in res["results"]}
+
+
+def test_data_dir_analogies(tmp_path, toy_embedding):
+    """TASK 2 for the analogy side of the evaluator."""
+    write_kind_dataset(
+        tmp_path,
+        "en",
+        "analogy",
+        "domain",
+        ["athens greece baghdad iraq"],
+        nested=True,
+    )
+    res = evaluation.eval_analogies(
+        toy_embedding,
+        TOKEN2ID,
+        tokenize_texts,
+        data_dir=tmp_path,
+        include_bundled=False,
+    )
+    (result,) = res["results"]
+    assert result["name"] == "en_domain"
+    assert result["score"] == pytest.approx(1.0)
+
+
+# coverage report (TASK 3)
+
+
+def test_dataset_coverage_reports_in_vocabulary_fraction(tmp_path, toy_embedding):
+    """
+    TASK 3: `dataset_coverage` reports, per dataset, the fraction of rows whose
+    every word survives preprocessing to a single in-vocabulary token -- the
+    same rows the evaluator can actually score.
+    """
+    write_kind_dataset(
+        tmp_path,
+        "en",
+        "ws",
+        "domain",
+        [
+            "athens greece 9",  # both in vocab
+            "greece iraq 5",  # both in vocab
+            "athens atlantis 3",  # atlantis is OOV
+            "lemuria mu 1",  # both OOV
+        ],
+        nested=True,
+    )
+
+    report = evaluation.dataset_coverage(
+        TOKEN2ID, tokenize_texts, kind="ws", data_dir=tmp_path, include_bundled=False
+    )
+
+    (entry,) = report
+    assert entry["name"] == "en_domain"
+    assert entry["kind"] == "ws"
+    assert entry["rows"] == 4
+    assert entry["covered"] == 2
+    assert entry["coverage"] == pytest.approx(0.5)
+
+
+def test_dataset_coverage_matches_the_evaluator(tmp_path, toy_embedding):
+    """
+    The coverage fraction has to equal `1 - oov` the evaluator reports, or the
+    number would mislead the user it is meant to help. A hyphenated entry
+    (dropped by `to_item`) must count as not-covered on both sides.
+    """
+    lines = [
+        "athens greece 9",
+        "greece iraq 5",
+        "athens iraq 1",
+        "athens-baghdad greece 3",  # multi-token -> OOV for the evaluator
+    ]
+    write_kind_dataset(tmp_path, "en", "ws", "domain", lines, nested=True)
+
+    (entry,) = evaluation.dataset_coverage(
+        TOKEN2ID, tokenize_texts, kind="ws", data_dir=tmp_path, include_bundled=False
+    )
+    res = evaluation.eval_similarity(
+        toy_embedding,
+        TOKEN2ID,
+        tokenize_texts,
+        data_dir=tmp_path,
+        include_bundled=False,
+    )
+    (result,) = res["results"]
+
+    assert entry["coverage"] == pytest.approx(3 / 4)
+    assert entry["coverage"] == pytest.approx(1 - result["oov"])
+
+
+def test_dataset_coverage_analogy_kind(tmp_path):
+    """Coverage also works for the 4-column analogy datasets."""
+    write_kind_dataset(
+        tmp_path,
+        "en",
+        "analogy",
+        "domain",
+        [
+            "athens greece baghdad iraq",  # all four in vocab
+            "athens greece baghdad atlantis",  # atlantis OOV
+        ],
+        nested=True,
+    )
+    (entry,) = evaluation.dataset_coverage(
+        TOKEN2ID,
+        tokenize_texts,
+        kind="analogy",
+        data_dir=tmp_path,
+        include_bundled=False,
+    )
+    assert entry["rows"] == 2
+    assert entry["covered"] == 1
+    assert entry["coverage"] == pytest.approx(0.5)
+
+
+def test_dataset_coverage_rejects_unknown_kind():
+    with pytest.raises(ValueError, match="kind must be one of"):
+        evaluation.dataset_coverage(TOKEN2ID, tokenize_texts, kind="bogus")
