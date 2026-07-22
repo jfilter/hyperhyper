@@ -268,6 +268,13 @@ matrix. This is usually what you want.
   randomized range-finder has more room to work), and the speedups grow with the
   matrix, so run `bench/bench_svd.py` on something the shape of *your* data
   before trading accuracy away.
+
+  How much they grow, at `dim=300` on a 25001×25001 matrix (1.4M nonzeros): the
+  `scikit` default goes from 2.0x to 2.9x and `{"n_iter": 10, "n_oversamples":
+  100}` from 1.4x to 1.5x. The shape of the trade does not change, though —
+  `{"n_iter": 20, "n_oversamples": 200}` is still **slower than the exact
+  backend** (0.6x) even at that size, and `"gensim"` at its defaults has by then
+  fallen behind `"scipy"` outright (0.8x, sharing 0.70 of the neighbours).
 - **`impl_args`** (default `None`): a dict of extra keyword arguments passed
   straight to the chosen backend. For the randomized backends this is where the
   accuracy knobs live: `n_iter`/`n_oversamples` for `"scikit"`,
