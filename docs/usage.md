@@ -156,7 +156,18 @@ and its text chunks under `path`. Reopening an existing bunch is
 
 Everything a bunch computes is cached on disk, keyed by a digest of the *effective*
 arguments (defaults included), so calling `bunch.svd(...)` twice with the same
-parameters recomputes nothing.
+parameters recomputes nothing. Cache files are written atomically — an
+interrupted run (Ctrl-C, a full disk, an OOM kill during a long SVD) leaves the
+previous entry intact rather than a truncated file the next run would try to
+load.
+
+> **A bunch directory is a trusted local cache. Never open one from an untrusted
+> source.** `corpus.pkl` and the text chunks are Python pickles, and unpickling
+> executes code by design — opening somebody else's bunch is equivalent to
+> running their program. This is a property of the format, not a bug with a
+> patch: it is why the bunch directory is documented as *your* cache, to be
+> regenerated from your own texts rather than downloaded. (The `.npz` matrices
+> are loaded with `allow_pickle=False`, so those cannot execute anything.)
 
 ## Getting embeddings: `pmi` and `svd`
 

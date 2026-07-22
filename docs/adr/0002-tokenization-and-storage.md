@@ -164,8 +164,12 @@ still shipped and became the legacy read path, so it was not wasted.
 5. `tokenize_string_v2` (NFC + extraction + digit parameter) under new names,
    default-flipped; record tokenizer identity in the results DB.
 6. curated-v3: restore the tokenizer-induced dropped rows.
-7. (Opportunistic, not now) npz id-chunks replacing `texts_N.pkl`; atomic writes;
-   bunch-directory trust note.
+7. (Opportunistic) npz id-chunks replacing `texts_N.pkl`; atomic writes;
+   bunch-directory trust note. **Partly done 2026-07-22:** atomic writes and the
+   trust note shipped, together with an explicit `allow_pickle=False` on every
+   numpy load. Replacing the chunk pickles with npz is still deferred -- they are
+   a regenerable derived cache, and a holistic bunch-format revision remains the
+   right scope for that.
 
 ## Alternatives considered
 

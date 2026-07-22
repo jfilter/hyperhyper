@@ -9,6 +9,7 @@ import inspect
 import json
 import logging
 import math
+import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -22,6 +23,7 @@ from . import evaluation, pair_counts, pmi, svd
 from .corpus import Corpus
 from .experiment import record, results_from_db
 from .utils import (
+    atomic_path,
     delete_folder,
     load_matrix,
     save_matrix,
@@ -394,7 +396,8 @@ class Bunch:
         if svd_path.is_file():
             try:
                 logger.info("retrieved already saved svd")
-                loader = np.load(str(svd_path))
+                # see `utils.load_arrays` on why `allow_pickle=False` is explicit
+                loader = np.load(str(svd_path), allow_pickle=False)
                 vt = loader["a3"] if "a3" in loader.files else None
                 return loader["a1"], loader["a2"], vt
             except Exception as e:
@@ -409,13 +412,17 @@ class Bunch:
         end = timer()
         logger.info("svd took %s minutes", round((end - start) / 60, 2))
 
-        svd_path.parent.mkdir(parents=True, exist_ok=True)
         # `a1`/`a2` match the historical `save_arrays` layout; `a3` (the context
         # vectors) is only written -- and only needed -- for `w+c`.
         arrays = {"a1": ut, "a2": s}
         if add_context:
             arrays["a3"] = vt
-        np.savez_compressed(str(svd_path), **arrays)
+        # atomic: an SVD can run for many minutes, and an interrupt partway
+        # through the write would leave a truncated cache the next run tries to
+        # load (see `utils.atomic_path`)
+        with atomic_path(svd_path) as tmp:
+            np.savez_compressed(str(tmp) + ".npz", **arrays)
+            os.replace(str(tmp) + ".npz", tmp)
         logger.info("svd arrays saved")
 
         return ut, s, (vt if add_context else None)

@@ -185,9 +185,16 @@ tests and respect the correctness gate around the counting code.
 
 ## Future Work / TODO
 
--   Speed up pair counting. The counting in `hyperhyper/pair_counts.py` is still
-    pure Python (`iterate_tokens`); the plan is to replace it with a vectorized
-    numpy implementation. A correctness gate is already in place for that rewrite:
+-   Vectorize pair counting — **but profile first.** The counting in
+    `hyperhyper/pair_counts.py` is still pure Python (`iterate_tokens`), and
+    rewriting it in numpy is the obvious next optimisation. It was measured
+    before being attempted, and the measurement did not support the premise:
+    counting accounted for ~8.6% of end-to-end runtime, of which the token loop
+    itself is roughly a quarter. The large win found in the same profile was
+    elsewhere (evaluation process-pool startup, ~28% of runtime, now ~0). So this
+    is a real but *small* item, not the bottleneck it looks like.
+
+    A correctness gate is in place for whoever does it:
     `tests/test_pair_counts_equivalence.py` compares the live counter against a
     frozen reference (`bench/reference.py`) and requires bit-identical output on
     the deterministic configurations. See [CONTRIBUTING.md](./CONTRIBUTING.md).

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from scipy.sparse import csr_matrix
 
 from hyperhyper import utils
@@ -68,3 +69,73 @@ def test_arrays_roundtrip(tmp_path):
 
 def test_default_workers():
     assert utils._default_workers() >= 1
+
+
+# --- atomic writes (ADR 0002) ----------------------------------------------
+#
+# Every artifact in a bunch directory is a regenerable cache that is written
+# once and read back on the next run. The failure these guard against is the
+# quiet one: an interrupted write (Ctrl-C, full disk, OOM kill during a long
+# SVD) leaving a *truncated file that still looks like a valid cache entry*, so
+# the next run finds the path and fails deep inside numpy/scipy instead of
+# simply rebuilding.
+
+
+def test_atomic_path_leaves_no_file_when_the_writer_raises(tmp_path):
+    target = tmp_path / "sub" / "artifact.bin"
+    with pytest.raises(RuntimeError), utils.atomic_path(target) as tmp:
+        tmp.write_bytes(b"half a file")
+        raise RuntimeError("interrupted")
+    assert not target.exists()
+    # and no temporary litter either
+    assert list((tmp_path / "sub").iterdir()) == []
+
+
+def test_atomic_path_does_not_clobber_an_existing_file_on_failure(tmp_path):
+    target = tmp_path / "artifact.bin"
+    target.write_bytes(b"the good previous cache entry")
+    with pytest.raises(RuntimeError), utils.atomic_path(target) as tmp:
+        tmp.write_bytes(b"garbage")
+        raise RuntimeError("interrupted")
+    assert target.read_bytes() == b"the good previous cache entry"
+
+
+def test_atomic_path_replaces_on_success(tmp_path):
+    target = tmp_path / "artifact.bin"
+    target.write_bytes(b"old")
+    with utils.atomic_path(target) as tmp:
+        tmp.write_bytes(b"new")
+    assert target.read_bytes() == b"new"
+
+
+def test_save_matrix_does_not_leave_a_stray_npz(tmp_path):
+    # numpy/scipy append `.npz` to a name that lacks it, which would defeat the
+    # rename and leave the temporary file behind under a different name
+    m = csr_matrix(np.array([[1.0, 0.0], [0.0, 2.0]], dtype=np.float32))
+    utils.save_matrix(tmp_path / "m", m)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["m.npz"]
+    assert utils.load_matrix(tmp_path / "m").shape == (2, 2)
+
+
+def test_save_arrays_does_not_leave_a_stray_npz(tmp_path):
+    utils.save_arrays(tmp_path / "a", np.arange(4.0), np.arange(2.0))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.npz"]
+    a1, _a2 = utils.load_arrays(tmp_path / "a")
+    assert a1.tolist() == [0.0, 1.0, 2.0, 3.0]
+
+
+def test_to_pickle_is_atomic(tmp_path):
+    target = tmp_path / "nested" / "obj.pkl"
+    utils.to_pickle({"a": 1}, target)
+    assert utils.read_pickle(target) == {"a": 1}
+    assert sorted(p.name for p in target.parent.iterdir()) == ["obj.pkl"]
+
+
+def test_load_arrays_refuses_a_pickled_object_array(tmp_path):
+    # `allow_pickle=False` is a security property, not a preference: an `.npz`
+    # carrying an object array executes code on load. These caches are plain
+    # numeric data, so nothing legitimate needs that path.
+    path = tmp_path / "evil.npz"
+    np.savez(path, a1=np.array([{"code": "here"}], dtype=object), a2=np.arange(2.0))
+    with pytest.raises(ValueError, match="allow_pickle=False"):
+        utils.load_arrays(path)

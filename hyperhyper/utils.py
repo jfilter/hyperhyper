@@ -5,8 +5,11 @@ utility functions for i/o and other general funtionality
 import logging
 import os
 import pickle
+import tempfile
 from collections import defaultdict
 from concurrent import futures
+from contextlib import contextmanager
+from pathlib import Path
 
 import numpy as np
 from scipy.sparse import csr_matrix, load_npz, save_npz
@@ -22,16 +25,58 @@ def _default_workers():
     return getattr(os, "process_cpu_count", os.cpu_count)() or 1
 
 
+def _with_npz(f):
+    """The path as a `str` ending in `.npz` (numpy appends it; we need it up front)."""
+    f = str(f)
+    return f if f.endswith(".npz") else f + ".npz"
+
+
+@contextmanager
+def atomic_path(final):
+    """
+    Yield a temporary path in the same directory, renamed over `final` on success.
+
+    Every artifact in a bunch directory is a *cache*: it is written once and read
+    back on the next run. Writing in place makes an interrupted run (Ctrl-C, a
+    full disk, an OOM kill during a long SVD) leave a **truncated file that still
+    looks like a valid cache entry** -- the next run finds the path, tries to
+    load it, and either raises deep inside numpy/scipy or, worse, silently
+    reports a stale-looking failure. Writing to a sibling temporary file and
+    `os.replace`-ing it means the destination either does not exist or is
+    complete; `os.replace` is atomic within a filesystem, and staying in the same
+    directory guarantees that.
+
+    The temporary file is removed if the writer raises, so a failed write leaves
+    no litter behind either.
+    """
+    final = Path(final)
+    final.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=final.parent, prefix=f".{final.name}.", suffix=".tmp"
+    )
+    os.close(fd)
+    tmp = Path(tmp)
+    try:
+        yield tmp
+        os.replace(tmp, final)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def save_arrays(f, a1, a2):
     """
     Save two numpy arrays to a single compressed ``.npz`` file at ``f``.
 
     Used to persist the SVD outputs ``(ut, s)``. ``f`` may be a path-like
-    object; numpy appends the ``.npz`` extension. Read back with ``load_arrays``.
+    object; the ``.npz`` extension is appended if missing. The write is atomic
+    (see `atomic_path`). Read back with ``load_arrays``.
     """
-    if not isinstance(f, str):
-        f = str(f)
-    np.savez_compressed(f, a1=a1, a2=a2)
+    final = _with_npz(f)
+    with atomic_path(final) as tmp:
+        # numpy would append `.npz` to a name that lacks it, defeating the rename
+        np.savez_compressed(str(tmp) + ".npz", a1=a1, a2=a2)
+        os.replace(str(tmp) + ".npz", tmp)
 
 
 def load_arrays(f):
@@ -41,11 +86,11 @@ def load_arrays(f):
     Accepts a path with or without the ``.npz`` extension (it is appended if
     missing) and returns the arrays as a ``(a1, a2)`` tuple.
     """
-    if not isinstance(f, str):
-        f = str(f)
-    if not f.endswith(".npz"):
-        f += ".npz"
-    loader = np.load(f)
+    # `allow_pickle=False` is numpy's default, but it is stated explicitly here
+    # because it is a *security* property, not a preference: an `.npz` may carry
+    # object arrays that execute code on load. These files are plain numeric
+    # caches, so nothing legitimate needs the pickle path (ADR 0002).
+    loader = np.load(_with_npz(f), allow_pickle=False)
     return loader["a1"], loader["a2"]
 
 
@@ -53,11 +98,13 @@ def save_matrix(f, m):
     """
     Save a scipy sparse matrix ``m`` to a compressed ``.npz`` file at ``f``.
 
-    ``f`` may be a path-like object. Read back with ``load_matrix``.
+    ``f`` may be a path-like object. The write is atomic (see `atomic_path`).
+    Read back with ``load_matrix``.
     """
-    if not isinstance(f, str):
-        f = str(f)
-    save_npz(f, m, compressed=True)
+    with atomic_path(_with_npz(f)) as tmp:
+        # scipy appends `.npz` unless the name already has it
+        save_npz(str(tmp) + ".npz", m, compressed=True)
+        os.replace(str(tmp) + ".npz", tmp)
 
 
 def load_matrix(f):
@@ -70,15 +117,12 @@ def load_matrix(f):
     ``data``/``indices``/``indptr``/``shape`` arrays), it falls back to
     reconstructing a ``csr_matrix`` from those arrays.
     """
-    if not isinstance(f, str):
-        f = str(f)
-    if not f.endswith(".npz"):
-        f += ".npz"
+    f = _with_npz(f)
     try:
         return load_npz(f)
     except ValueError:
         # fall back to the legacy, hand-rolled layout (CSR only)
-        loader = np.load(f)
+        loader = np.load(f, allow_pickle=False)
         return csr_matrix(
             (loader["data"], loader["indices"], loader["indptr"]),
             shape=loader["shape"],
@@ -134,15 +178,25 @@ def to_pickle(ob, fn):
     Pickle object ``ob`` to the file ``fn``, creating parent directories.
 
     ``fn`` is a ``pathlib.Path``; any missing parent directories are created.
+    The write is atomic (see `atomic_path`): a half-written chunk pickle is the
+    worst of the cache corruptions, because `read_pickle` on it raises from
+    inside a worker process during counting.
     """
-    fn.parent.mkdir(parents=True, exist_ok=True)
-    with open(fn, "wb") as outfile:
+    with atomic_path(fn) as tmp, open(tmp, "wb") as outfile:
         pickle.dump(ob, outfile)
 
 
 def read_pickle(fn):
     """
     Unpickle and return the object stored in the file ``fn``.
+
+    **A bunch directory is a trusted local cache, never something to load from
+    an untrusted source.** Unpickling executes code by design, so opening
+    somebody else's bunch is equivalent to running their program. This is the
+    honest answer rather than a fixable flaw: the alternative (a pickle-free
+    on-disk format) was considered in ADR 0002 and deferred, because the chunk
+    files are a regenerable derived cache and reworking the bunch format
+    piecemeal is the wrong scope.
     """
     with open(fn, "rb") as infile:
         return pickle.load(infile)

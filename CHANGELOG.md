@@ -7,6 +7,22 @@ Everything below is user-visible; several items change numeric results.
 
 ### Added
 
+-   **Cache files are written atomically.** Every artifact in a bunch directory —
+    the count and PMI matrices, the SVD arrays, the corpus and text-chunk pickles —
+    is now written to a sibling temporary file and renamed into place. An
+    interrupted run (Ctrl-C, a full disk, an OOM kill partway through a long SVD)
+    previously left a **truncated file that still looked like a valid cache
+    entry**, so the next run found it and failed inside numpy/scipy instead of
+    rebuilding. The destination is now either absent or complete, and a failed
+    write leaves no temporary litter.
+
+-   **`allow_pickle=False` is explicit on every numpy load**, and the bunch
+    directory is documented as a **trusted local cache — never open one from an
+    untrusted source**. `corpus.pkl` and the text chunks are pickles, so
+    unpickling executes code by design; the `.npz` matrices now cannot. This is
+    the honest statement of a format property, not a patched vulnerability
+    (ADR 0002, roadmap item 7).
+
 -   **Domain proxy evaluation tasks** (ADR 0001, P4) — the answer for corpora the
     general-language benchmarks cannot score. Two new dataset kinds, both with gold
     that is a *membership fact* rather than a rating, so they can be built without
