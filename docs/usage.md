@@ -231,20 +231,48 @@ matrix. This is usually what you want.
   | `scikit` | 2.4–3.7x | 0.69–0.86 | 0.88–0.91 |
   | `gensim` | 1.2–1.7x | 0.59–0.82 | 0.78–0.87 |
 
-  So: **keep `"scipy"` unless the SVD is actually your bottleneck.** A third of
-  the nearest neighbours changing is not a rounding difference — at `dim=100` the
-  randomized backends agree with the exact one on barely two thirds of the top
-  ten. Accuracy improves as `dim` grows (the randomized range-finder has more
-  room), so the trade is least bad for large `dim`, which is also where the
-  speedup is biggest.
+  So at their **default settings**: keep `"scipy"` unless the SVD is actually
+  your bottleneck. A third of the nearest neighbours changing is not a rounding
+  difference — at `dim=100` the randomized backends agree with the exact one on
+  barely two thirds of the top ten.
 
-  If you do want the speed, **use `"scikit"`, not `"gensim"`**: it is faster
-  *and* closer to the exact answer on every measure and every dimension tested,
-  so `"gensim"` is dominated. It remains available because it needs no extra
-  dependency, and because changing a default silently would move existing
-  results.
+  But those defaults are a *point*, not the trade. Fidelity is bought with power
+  iterations and oversampling, both of which you can pass through `impl_args`,
+  and the defaults sit at the fast-and-sloppy end of that curve. At `dim=300` on
+  the same matrix:
+
+  | `impl_args` for `"scikit"` | speed vs `scipy` | top-10 shared | cosine rank corr. |
+  |---|---:|---:|---:|
+  | `{"n_iter": 4}` | 3.4x | 0.76 | 0.83 |
+  | `{}` (default, `n_iter="auto"`) | 2.0x | 0.82 | 0.90 |
+  | `{"n_iter": 10, "n_oversamples": 100}` | **1.4x** | **0.94** | **0.99** |
+  | `{"n_iter": 20, "n_oversamples": 200}` | 0.5x | 1.00 | 1.00 |
+
+  Read the last two rows together: you can have a near-exact answer from a
+  randomized backend, but the setting that gets you there is **slower than just
+  computing the exact one**. The approximation's whole operating range is the
+  narrow band above it — around `{"n_iter": 10, "n_oversamples": 100}`, which
+  keeps 94% of the neighbours for a 1.4x speedup on a stage that is roughly a
+  third of a full run. That is a ~10% end-to-end saving for a result that is
+  close but not equal, which is why **`"scipy"` remains the default** and why
+  this is presented as a knob rather than a recommendation.
+
+  If you do want a randomized backend, **use `"scikit"`, not `"gensim"`**:
+  `"gensim"` is dominated at every point on the curve, not merely at its
+  defaults — matched for fidelity it is 3–4x slower than `"scikit"`, and at
+  `power_iters=20` it is 3x slower than the exact backend it is approximating.
+  It remains available because it needs no extra dependency, and because
+  changing a default silently would move existing results.
+
+  Two caveats on all of the above. Accuracy improves as `dim` grows (the
+  randomized range-finder has more room to work), and the speedups grow with the
+  matrix, so run `bench/bench_svd.py` on something the shape of *your* data
+  before trading accuracy away.
 - **`impl_args`** (default `None`): a dict of extra keyword arguments passed
-  straight to the chosen backend.
+  straight to the chosen backend. For the randomized backends this is where the
+  accuracy knobs live: `n_iter`/`n_oversamples` for `"scikit"`,
+  `power_iters`/`extra_dims` for `"gensim"` (which this package already defaults
+  to `power_iters=5, extra_dims=10`). See the table above.
 
 ### Return values
 

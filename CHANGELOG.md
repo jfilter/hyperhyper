@@ -101,6 +101,24 @@
     `scikit`, which is both faster and more accurate at every dimension tested.
     `docs/usage.md` now says so under `impl`.
 
+-   **...and a second table for the accuracy knobs, which is the one that
+    settles it.** The comparison above measures the backends at their *default*
+    settings, which is a point on a curve, not the trade itself. Randomized SVD
+    buys fidelity with power iterations and oversampling; both were already
+    reachable through `impl_args` and neither had ever been measured. At
+    `dim=300`, `scikit` walks from 3.4x speed / 0.76 neighbour overlap
+    (`n_iter=4`) through 1.4x / 0.94 (`n_iter=10, n_oversamples=100`) to
+    0.5x / 1.00 (`n_iter=20, n_oversamples=200`).
+
+    Read the ends together: a randomized backend *can* give a near-exact answer,
+    but the setting that gets there **costs more than computing the exact one**.
+    The whole usable range is the narrow band in between — roughly a 10%
+    end-to-end saving for a result that is close but not equal. `scipy` stays the
+    default on that basis rather than on a hunch, and `gensim` turns out to be
+    dominated across the entire curve rather than only at its defaults: matched
+    for fidelity it is 3-4x slower than `scikit` and 3x slower than the exact
+    backend it approximates.
+
 ## 0.2.0 - 2026-07-22
 
 Modernization of the package for current Python and dependency versions, plus

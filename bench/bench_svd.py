@@ -45,6 +45,21 @@ fidelity is measured there:
 `scipy` is the reference for the fidelity columns because it is the exact
 truncated SVD -- not because it is "the right answer" in some larger sense.
 
+THE ACCURACY KNOBS
+==================
+A randomized SVD is not a fixed trade: its fidelity is bought with **power
+iterations** (`n_iter` for scikit, `power_iters` for gensim) and **oversampling**
+(`n_oversamples` / `extra_dims`). Both are forwarded through `calc_svd`'s
+`impl_args`, so a user can move along the curve -- but the package never said
+where on it the defaults sit, or whether a high-fidelity setting is still faster
+than just doing the exact factorization.
+
+The second table answers that. It is the interesting one: a randomized backend
+is only worth choosing if some point on its curve is *both* materially faster
+than `scipy` and close enough to it to report the same neighbours. If the
+settings that reach high fidelity cost more than the exact backend, the
+approximation has no operating point and the recommendation is simply "don't".
+
 WHAT THIS DOES NOT MEASURE
 ==========================
 Not whether the *approximation* is worse for a downstream task. A randomized
@@ -158,7 +173,7 @@ def run(matrix, dim):
         except ImportError as e:
             print(f"  {impl}: skipped ({e})")
     if "scipy" not in results:
-        return
+        return None
 
     ref_ut, ref_s, _ = results["scipy"][1]
     reference = embedding(ref_ut, ref_s)
@@ -182,6 +197,59 @@ def run(matrix, dim):
             f"{impl:10s} {elapsed:7.3f}s {base / elapsed:7.2f}x {len(s):11d} "
             f"{err:11.2e} {corr:13.4f} {overlap:14.3f}"
         )
+    return reference, ref_s, base
+
+
+# (backend, label, impl_args). The scikit rows walk `n_iter` at the default
+# oversampling and then add oversampling at the top of that range; the gensim
+# rows walk `power_iters` around the 5 this package already defaults to. Note
+# that scikit's own `n_iter="auto"` is 7 below `0.1 * min(shape)` components and
+# 4 at or above it, so the default row moves with `dim` -- which is exactly the
+# kind of thing a table like this is for.
+TUNING = [
+    ("scikit", "n_iter=auto (default)", {}),
+    ("scikit", "n_iter=4", {"n_iter": 4}),
+    ("scikit", "n_iter=10", {"n_iter": 10}),
+    ("scikit", "n_iter=20", {"n_iter": 20}),
+    ("scikit", "n_iter=10 os=100", {"n_iter": 10, "n_oversamples": 100}),
+    ("scikit", "n_iter=20 os=200", {"n_iter": 20, "n_oversamples": 200}),
+    ("gensim", "power_iters=5 (default)", {}),
+    ("gensim", "power_iters=20", {"power_iters": 20}),
+    ("gensim", "power_iters=20 xd=200", {"power_iters": 20, "extra_dims": 200}),
+]
+
+
+def run_tuning(matrix, dim, reference, ref_s, base):
+    """
+    Walk each randomized backend's accuracy knobs; see the module docstring.
+
+    `base` is `scipy`'s time, so `speedup < 1.0` marks a setting that costs more
+    than the exact factorization it is approximating -- the point at which the
+    approximation stops having any reason to exist.
+    """
+    print(
+        f"{'backend':8s} {'setting':24s} {'time':>8s} {'speedup':>8s} "
+        f"{'sv_rel_err':>11s} {'cos_spearman':>13s} {'nn_overlap@10':>14s}"
+    )
+    for impl, label, impl_args in TUNING:
+        try:
+            best, out = None, None
+            for _ in range(REPEATS):
+                start = time.perf_counter()
+                out = svd.calc_svd(matrix, dim, impl, dict(impl_args))
+                elapsed = time.perf_counter() - start
+                best = elapsed if best is None else min(best, elapsed)
+        except ImportError as e:
+            print(f"  {impl} {label}: skipped ({e})")
+            continue
+        ut, s, _vt = out
+        err, corr, overlap = fidelity(
+            reference, embedding(ut, s), ref_s, s, np.random.default_rng(SEED)
+        )
+        print(
+            f"{impl:8s} {label:24s} {best:7.3f}s {base / best:7.2f}x "
+            f"{err:11.2e} {corr:13.4f} {overlap:14.3f}"
+        )
 
 
 def main(argv):
@@ -201,8 +269,12 @@ def main(argv):
 
     for dim in dims:
         print(f"dim = {dim}")
-        run(matrix, dim)
+        baseline = run(matrix, dim)
         print()
+        if baseline is not None:
+            print(f"dim = {dim}, accuracy knobs (speedup is still against scipy)")
+            run_tuning(matrix, dim, *baseline)
+            print()
 
 
 if __name__ == "__main__":
