@@ -75,9 +75,16 @@ The deterministic half of that product (4 x 3 x 2 x 2 = 48 cells) is swept
 exhaustively -- each cell is one `count_pairs` call, so it is cheap. The
 randomized half costs `N_STAT_SEEDS` calls per cell, so its window axis is
 bracketed rather than swept; see `STAT_WINDOWS` for why that is defensible.
-`delete_oov` is left at its default of True throughout: it is a plain filter
-applied before any of the knobs here, and varying it would double the runtime
-to re-test the same code paths on a slightly shorter token list.
+`delete_oov` is varied in its own case at the end of this file rather than
+across the grid. It was previously left at True throughout, on the stated
+grounds that it is "a plain filter applied before any of the knobs" -- that was
+wrong, and is corrected here: removing an out-of-vocabulary token CLOSES THE
+WINDOW over its slot, so its two neighbours become adjacent and every distance
+behind it shifts by one. That changes which pairs exist and, under "deter" and
+"decay", what weight they carry. It is a different traversal, not a shorter
+list. It also needs its own corpus (`oov_corpus`): the grid corpus has no
+out-of-vocabulary token at all, so testing this on it would compare a matrix to
+itself.
 
 They are backstopped by two things that ARE exact even on the random paths:
 `test_random_config_is_reproducible_for_a_fixed_seed` (same seed twice must
@@ -215,6 +222,27 @@ def grid_corpus(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
+def oov_corpus(tmp_path_factory):
+    """
+    A corpus that really does contain out-of-vocabulary tokens.
+
+    `grid_corpus` does not: its 60-word vocabulary survives `Vocab.filter`
+    intact, so every token maps to a real id and `delete_oov` has nothing to
+    delete. Running the `delete_oov=False` tests on it would have compared a
+    matrix to itself -- which is why the vacuity guard below exists and why this
+    fixture does.
+
+    `keep_n=20` of a 60-word vocabulary sends the other 40 to `<UNK>`, spread
+    through every sentence by the Zipf draw.
+    """
+    rng = random.Random(20260721)
+    sents = _zipf_sentences(rng, n_sentences=1000, vocab_size=60, sentence_length=10)
+    corpus = hyperhyper.Corpus.from_texts(sents, preproc_func=tokenize_texts, keep_n=20)
+    corpus.texts_to_file(tmp_path_factory.mktemp("oov") / "texts", 40)
+    return corpus
+
+
+@pytest.fixture(scope="module")
 def uniform_corpus(tmp_path_factory):
     """
     Every word occurring equally often, so the keep probability
@@ -238,7 +266,9 @@ def _both(corpus, **kwargs):
 # --------------------------------------------------------------------------
 
 
-def _assert_bit_identical(corpus, window, dynamic_window, subsample, seed):
+def _assert_bit_identical(
+    corpus, window, dynamic_window, subsample, seed, delete_oov=True
+):
     live, ref = _both(
         corpus,
         window=window,
@@ -246,6 +276,7 @@ def _assert_bit_identical(corpus, window, dynamic_window, subsample, seed):
         subsample=subsample,
         subsample_factor=SUBSAMPLE_FACTOR,
         seed=seed,
+        delete_oov=delete_oov,
     )
     # not assert_allclose: see the module docstring
     np.testing.assert_array_equal(
@@ -254,7 +285,8 @@ def _assert_bit_identical(corpus, window, dynamic_window, subsample, seed):
         err_msg=(
             f"live count_pairs diverged from the frozen f68cc74 reference for "
             f"window={window} dynamic_window={dynamic_window!r} "
-            f"subsample={subsample!r} seed={seed}. This configuration draws no "
+            f"subsample={subsample!r} delete_oov={delete_oov} seed={seed}. "
+            f"This configuration draws no "
             f"random numbers, so the matrices must match bit for bit."
         ),
     )
@@ -655,4 +687,101 @@ def test_prob_subsampling_matches_the_deter_scaling_in_expectation(uniform_corpu
         f"(p={p:.4f}). Difference {diff:.6g} exceeds {SIGMA_TOLERANCE} standard "
         f"errors ({SIGMA_TOLERANCE * se:.6g}): the per-token keep rate is not "
         f"sqrt(threshold/count)."
+    )
+
+
+# --------------------------------------------------------------------------
+# gaps in the grid above, closed
+#
+# All three were named in an external review of this gate. Each is a
+# configuration the sweep never reaches, on a code path the vectorization is
+# about to rewrite -- so "probably fine" is exactly the wrong standard.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dynamic_window", DETERMINISTIC_DYNAMIC)
+@pytest.mark.parametrize("window", (1, 2, 5, 10))
+def test_subsample_off_is_bit_identical_to_none(grid_corpus, window, dynamic_window):
+    """
+    `subsample="off"` is documented as a synonym for `None`, and the grid only
+    ever passes `None`. A rewrite that reads the mode string rather than a
+    normalized flag could easily treat the unknown-to-it `"off"` as "some
+    subsampling", and nothing here would have noticed.
+
+    Asserted against the *live* code both times: this is an internal-consistency
+    property of the two spellings, not a claim about the frozen reference.
+    """
+    off = hyperhyper.count_pairs(
+        grid_corpus,
+        window=window,
+        dynamic_window=dynamic_window,
+        subsample="off",
+        subsample_factor=SUBSAMPLE_FACTOR,
+        seed=1312,
+    ).toarray()
+    none = hyperhyper.count_pairs(
+        grid_corpus,
+        window=window,
+        dynamic_window=dynamic_window,
+        subsample=None,
+        subsample_factor=SUBSAMPLE_FACTOR,
+        seed=1312,
+    ).toarray()
+    np.testing.assert_array_equal(
+        off,
+        none,
+        err_msg=(
+            f"subsample='off' and subsample=None disagree for window={window} "
+            f"dynamic_window={dynamic_window!r}; they are documented as the "
+            f"same thing"
+        ),
+    )
+    assert none.sum() > 0
+
+
+@pytest.mark.parametrize(
+    ("window", "dynamic_window", "subsample"),
+    [
+        (w, d, s)
+        for w in (2, 5)
+        for d in DETERMINISTIC_DYNAMIC
+        for s in DETERMINISTIC_SUBSAMPLE
+    ],
+)
+def test_delete_oov_false_is_bit_identical(
+    oov_corpus, window, dynamic_window, subsample
+):
+    """
+    The grid leaves `delete_oov` at its default of True throughout, on the
+    stated grounds that it is "a plain filter applied before any of the knobs".
+
+    That understates it, and the understatement is why this test exists.
+    Removing an out-of-vocabulary token *closes the window over its slot*, so
+    the two words that flanked it become neighbours and every distance behind it
+    shifts by one -- which changes both *which* pairs exist and, under "deter"
+    and "decay", *what weight* they carry. It is a different traversal, not a
+    shorter list, and the vectorized rewrite has to reproduce it.
+    """
+    _assert_bit_identical(
+        oov_corpus, window, dynamic_window, subsample, seed=1312, delete_oov=False
+    )
+
+
+def test_delete_oov_actually_changes_the_matrix(oov_corpus):
+    """
+    Guards the test above from being vacuous.
+
+    If the fixture corpus happened to contain no out-of-vocabulary token, both
+    settings would produce the same matrix and `test_delete_oov_false_is_bit_
+    identical` would be asserting nothing at all.
+    """
+    kept = hyperhyper.count_pairs(
+        oov_corpus, window=5, subsample=None, delete_oov=False
+    ).toarray()
+    dropped = hyperhyper.count_pairs(
+        oov_corpus, window=5, subsample=None, delete_oov=True
+    ).toarray()
+    assert not np.array_equal(kept, dropped), (
+        "the fixture corpus has no out-of-vocabulary token, so delete_oov "
+        "cannot be exercised by it"
     )
