@@ -13,7 +13,7 @@ from gensim.corpora import Dictionary
 from gensim.utils import SaveLoad
 from tqdm import tqdm
 
-from .preprocessing import texts_to_sents, tokenize_texts_parallel
+from .preprocessing import tokenize_texts_parallel_v2
 from .utils import _default_workers, chunks, dsum, read_pickle, to_pickle
 
 logger = logging.getLogger(__name__)
@@ -235,7 +235,7 @@ class Corpus(SaveLoad):
 
     @staticmethod
     def from_sents(
-        texts, vocab=None, preproc_func=tokenize_texts_parallel, lang="en", **kwargs
+        texts, vocab=None, preproc_func=tokenize_texts_parallel_v2, lang="en", **kwargs
     ):
         """
         Construct corpus from lists of sentences.
@@ -247,16 +247,20 @@ class Corpus(SaveLoad):
         return corpus
 
     @staticmethod
-    def from_texts(texts, preproc_func=texts_to_sents, **kwargs):
+    def from_texts(texts, preproc_func=tokenize_texts_parallel_v2, **kwargs):
         """
         Construct corpus from list of texts.
+
+        Defaults to the lightweight v2 whitespace tokenizer (ADR 0002); pass
+        `preproc_func=texts_to_sents` for the spaCy sentence-splitting /
+        lemmatizing path (needs the `full` extra + a model).
         """
         return Corpus.from_sents(texts, preproc_func=preproc_func, **kwargs)
 
     @staticmethod
     def from_text_files(
         base_dir,
-        preproc_func=texts_to_sents,
+        preproc_func=tokenize_texts_parallel_v2,
         view_fraction=1,
         lang="en",
         seed=1312,

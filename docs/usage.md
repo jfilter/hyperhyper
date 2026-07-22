@@ -26,24 +26,60 @@ vectors.most_similar("berlin")
 
 A `Corpus` holds the preprocessed, tokenized texts plus a `Vocab` (the token ↔ id
 mapping). There are four constructors; they differ only in where the text comes
-from and which preprocessing function is the default.
+from. **All four now default to the same lightweight tokenizer**
+(`tokenize_texts_parallel_v2`, no spaCy).
 
 | Constructor | Input | Default preprocessing |
 | --- | --- | --- |
-| `Corpus.from_file(input_path, limit=None, **kwargs)` | A single text file, one sentence per line | `tokenize_texts_parallel` (whitespace, no spaCy) |
-| `Corpus.from_sents(texts, vocab=None, preproc_func=tokenize_texts_parallel, lang="en", **kwargs)` | A list of sentence strings | `tokenize_texts_parallel` |
-| `Corpus.from_texts(texts, preproc_func=texts_to_sents, **kwargs)` | A list of documents (each split into sentences) | `texts_to_sents` (spaCy sentence splitting + lemmatization) |
-| `Corpus.from_text_files(base_dir, preproc_func=texts_to_sents, view_fraction=1, lang="en", seed=1312, **kwargs)` | A folder of `*.txt` files | `texts_to_sents` |
+| `Corpus.from_file(input_path, limit=None, **kwargs)` | A single text file, one sentence per line | `tokenize_texts_parallel_v2` (whitespace, no spaCy) |
+| `Corpus.from_sents(texts, vocab=None, preproc_func=tokenize_texts_parallel_v2, lang="en", **kwargs)` | A list of sentence strings | `tokenize_texts_parallel_v2` |
+| `Corpus.from_texts(texts, preproc_func=tokenize_texts_parallel_v2, **kwargs)` | A list of documents | `tokenize_texts_parallel_v2` |
+| `Corpus.from_text_files(base_dir, preproc_func=tokenize_texts_parallel_v2, view_fraction=1, lang="en", seed=1312, **kwargs)` | A folder of `*.txt` files | `tokenize_texts_parallel_v2` |
+
+> **Breaking change (ADR 0002).** `from_texts` and `from_text_files` used to
+> default to `texts_to_sents` (spaCy sentence-splitting + lemmatization, needs a
+> model). They now default to the lightweight `tokenize_texts_parallel_v2`, so the
+> package is "lightweight by default" on every constructor. This changes the
+> vocabulary — and therefore every similarity/analogy number — for **new** corpora
+> built with the default; existing bunches are unaffected (they pickle their
+> tokenizer by reference, under its old name). The spaCy path is unchanged and
+> still available: pass `preproc_func=texts_to_sents` explicitly. Note this for the
+> CHANGELOG as a breaking evaluation change.
+
+### The v2 tokenizer
+
+`tokenize_texts_parallel_v2` applies `tokenize_string_v2(text, lower=True,
+normalize_digits=False)` per line. Compared with the legacy v1 tokenizer
+(`tokenize_string`, still the default only for bunches built before this change),
+v2:
+
+- **NFC-normalizes first**, so an accented word written as decomposed Unicode
+  (`café` as `cafe` + a combining accent) is no longer silently split into a
+  separate, accent-stripped vocab entry.
+- **Canonicalizes typographic variants** — the curly apostrophe `’` (U+2019) and
+  the Unicode hyphens/dashes (U+2010, U+2011, …) become ASCII `'` and `-`.
+- **Extracts rather than destroys**: `city's`, `ice-cream` and `don't` stay whole
+  (v1 shattered them into `city`/`s`, `ice`/`cream`). Everything else still splits
+  on non-word characters. Dotted forms like `U.S.A.` are *not* rescued — adding
+  `.` to the joiner would glue `word.Next` together in scraped text.
+- **Keeps digits by default.** `normalize_digits=False` (the default) leaves `2001`
+  as `2001`. Pass `normalize_digits=True` to restore the legacy digit→`0` behaviour
+  — this is the Levy-Goldberg-Dagan / hyperwords convention this package
+  reimplements, useful when numerals should collapse into one token.
+
+`tokenize_texts_parallel_v2` uses the defaults (`lower=True`,
+`normalize_digits=False`). To run v2 with non-default options, supply a small
+top-level wrapper as `preproc_func` (see the `preproc_func` contract below) — not
+a `lambda` or `functools.partial`, which are not picklable by reference.
 
 Notes:
 
-- **`from_file` / `from_sents`** default to the whitespace tokenizer
-  (`tokenize_texts_parallel`), which needs no spaCy model. `from_file` reads the
-  file, splits on line breaks, and passes the lines to `from_sents`; `limit` caps
-  the number of lines read.
-- **`from_texts` / `from_text_files`** default to `texts_to_sents`, which uses
-  spaCy to split documents into sentences and (by default) lemmatizes and drops
-  stop words. This requires the `full` extra and the `en_core_web_sm` model.
+- **`from_file`** reads the file, splits on line breaks, and passes the lines to
+  `from_sents`; `limit` caps the number of lines read.
+- **`texts_to_sents`** (the spaCy path) is still a first-class, opt-in
+  `preproc_func`: it splits documents into sentences and (by default) lemmatizes
+  and drops stop words. This requires the `full` extra and the `en_core_web_sm`
+  model. Pass it explicitly to any constructor.
 - **`from_text_files`** is for corpora too large to hold in memory: it reads a
   directory of `*.txt` files and keeps texts on disk. `view_fraction` lets the
   vocabulary be estimated from a random subset of the files (`seed` makes that
@@ -54,6 +90,44 @@ Notes:
   `no_below=0`, `no_above=1`, `keep_n=50000`, `keep_tokens=None` (the same
   arguments as gensim's `filter_extremes`). `keep_n` is the vocabulary-size cap;
   `hyperhyper` is designed for vocabularies up to ~50k.
+
+### The `preproc_func` contract
+
+`preproc_func` is the package's **pluggability hook** — the one place you replace
+the tokenizer. It is a `Callable[[list[str]], list[list[str]]]`: given a list of
+raw text strings, it returns one token list per string. The built-in tokenizers
+(`tokenize_texts_parallel_v2`, `tokenize_texts`, and the spaCy `texts_to_sents`)
+are all exactly this shape; a spaCy or Hugging Face tokenizer plugs in the same
+way — as a user-supplied callable, not a built-in class hierarchy or registry.
+
+Two hard requirements, both because the function is *stored and shipped*, not just
+called:
+
+- **It must be a picklable, top-level function.** The chosen `preproc_func` is
+  saved into `corpus.pkl` (by module + qualified name) and sent across process
+  pools. A `lambda`, a nested function, or a `functools.partial` breaks both — use
+  a module-level `def`. To run a built-in with non-default options, wrap it:
+
+  ```python
+  # tokenizers.py  (a real importable module)
+  from hyperhyper.preprocessing import tokenize_texts_v2
+
+  def tokenize_domain(texts):
+      # keep digits collapsed for this numeral-heavy corpus
+      return tokenize_texts_v2(texts, normalize_digits=True)
+  ```
+  ```python
+  import hyperhyper as hy
+  from tokenizers import tokenize_domain
+
+  corpus = hy.Corpus.from_texts(docs, preproc_func=tokenize_domain)
+  ```
+
+- **The same function is applied to the corpus *and* to the evaluation test
+  words.** Evaluation reuses `corpus.preproc_fun` on the words of every test set,
+  so your tokenizer and the scored vocabulary can never drift apart. That is also
+  why the tokenizer's identity (its qualname) is recorded with each result — see
+  [Querying past runs](#querying-past-runs-bunchresults).
 
 ## The `Bunch`
 
@@ -238,9 +312,12 @@ bunch.results(query=None, order="micro_results desc", limit=100)
 ```
 
 Returns a list of row dicts (best first by default). Each row contains the run's
-parameters — including the resolved `pair_args__*` columns — and score columns
-such as `micro_results`, `macro_results`, and per-dataset `<name>_score`,
-`<name>_oov`, `<name>_fullscore`.
+parameters — including the resolved `pair_args__*` columns and a `tokenizer`
+column holding the corpus tokenizer's qualname (e.g. `tokenize_texts_parallel_v2`
+vs the legacy `tokenize_texts`) — and score columns such as `micro_results`,
+`macro_results`, and per-dataset `<name>_score`, `<name>_oov`, `<name>_fullscore`.
+The `tokenizer` column is what keeps v1 and v2 numbers attributable and stops them
+colliding: two runs that differ only in their tokenizer stay distinct rows.
 
 - **`query`** filters by exact parameter match, e.g. `query={"dim": 500}` or
   `query={"impl": "scipy"}`. Nested parameters use the flattened form, e.g.

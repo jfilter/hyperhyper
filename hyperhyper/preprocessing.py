@@ -6,17 +6,47 @@ import logging
 import multiprocessing
 import re
 import sys
+import unicodedata
 
-from gensim.parsing.preprocessing import (
-    preprocess_string,
-    strip_non_alphanum,
-    strip_tags,
-)
 from tqdm import tqdm
 
 from .utils import map_pool
 
 logger = logging.getLogger(__name__)
+
+# --- Inlined gensim.parsing.preprocessing helpers -------------------------
+#
+# `tokenize_string` used to import `preprocess_string`, `strip_tags` and
+# `strip_non_alphanum` from `gensim.parsing.preprocessing`. Those three are
+# ~6 lines of regex in total; inlining them pins the tokenizer's *semantics*
+# in this repo where they are tested and cannot drift under a gensim upgrade.
+# gensim stays a hard dependency (via `Vocab`/`KeyedVectors`) -- this is about
+# owning the semantics, not dropping the dependency.
+#
+# These are byte-for-byte equivalent to gensim's helpers for `str` input:
+# gensim compiles both patterns with `re.UNICODE`, and its `utils.to_unicode`
+# call is a no-op for `str` (it only decodes `bytes`), and every value flowing
+# through this module is already `str`.
+_RE_TAGS = re.compile(r"<([^>]+)>", re.UNICODE)
+_RE_NONALPHA = re.compile(r"\W", re.UNICODE)
+
+
+def _strip_tags(s):
+    """Remove `<...>` tags (gensim.parsing `strip_tags`, inlined)."""
+    return _RE_TAGS.sub("", s)
+
+
+def _strip_non_alphanum(s):
+    """Replace every non-word (`\\W`) char with a space (gensim `strip_non_alphanum`)."""
+    return _RE_NONALPHA.sub(" ", s)
+
+
+def _preprocess_string(s, filters):
+    """Apply `filters` in order then whitespace-split (gensim `preprocess_string`)."""
+    for f in filters:
+        s = f(s)
+    return s.split()
+
 
 # Tokenizing in a process pool only pays off once there is enough text to
 # amortize spawning one interpreter per core, and every child re-imports this
@@ -91,9 +121,14 @@ def simple_preproc(text):
 def tokenize_string(text):
     """
     tokenize based on whitespaces
+
+    NB: existing bunches pickle this function by *reference* (module+qualname),
+    so its behaviour must never change -- see `tokenize_string_v2` for the
+    fixed tokenizer under a new name. The gensim.parsing helpers it used to call
+    are now inlined above (byte-for-byte identical for `str` input).
     """
-    CUSTOM_FILTERS = [simple_preproc, strip_tags, strip_non_alphanum]
-    return preprocess_string(text, CUSTOM_FILTERS)
+    CUSTOM_FILTERS = [simple_preproc, _strip_tags, _strip_non_alphanum]
+    return _preprocess_string(text, CUSTOM_FILTERS)
 
 
 def tokenize_texts(texts):
@@ -128,6 +163,115 @@ def tokenize_texts_parallel(texts):
     return map_pool(texts, tokenize_string)
 
 
+# --- v2 tokenizer ---------------------------------------------------------
+#
+# `tokenize_string_v2` is the fixed tokenizer (ADR 0002). It lives under a NEW
+# name on purpose: `Corpus(SaveLoad)` pickles `preproc_fun` by reference, so
+# editing `tokenize_string` in place would silently change every existing
+# bunch's preprocessing on reopen. The old functions stay forever.
+#
+# What it fixes relative to v1:
+#   1. NFC normalization FIRST -- v1 left NFD 'café' with a combining mark
+#      that `\W` deleted, so 'cafe' and 'café' became two vocab entries.
+#   2. Typographic canonicalization -- curly apostrophe U+2019 -> ASCII "'", and
+#      the Unicode hyphens (U+2010, U+2011, U+2012, U+2013, U+2014) -> ASCII "-".
+#   3. Extraction, not destruction: `\w+(?:['\-]\w+)*` keeps `city's`,
+#      `ice-cream`, `don't` whole and splits on everything else. v1's
+#      `\W`-substitution shattered them into `city`/`s`, `ice`/`cream`.
+#   4. Digit->"0" is now a PARAMETER (`normalize_digits`), default False: keep
+#      digits, since the audience is small domain corpora where numerals carry
+#      meaning. `normalize_digits=True` restores the legacy behaviour, which is
+#      the Levy-Goldberg-Dagan / hyperwords convention this package reimplements.
+
+# U+2019 RIGHT SINGLE QUOTATION MARK (used as a typographic apostrophe) is
+# folded to ASCII "'" so the extraction pattern's clitic joiner covers curly
+# apostrophes too. Written as an escape so the ambiguous glyph never appears
+# in the source literally.
+_CURLY_APOSTROPHE = "\u2019"
+
+# The Unicode hyphen/dash characters that a `-` in the joiner set should treat
+# as a hyphen. Written as escapes (the glyphs are visually ambiguous with an
+# ASCII hyphen):
+#   U+2010 HYPHEN, U+2011 NON-BREAKING HYPHEN, U+2012 FIGURE DASH,
+#   U+2013 EN DASH, U+2014 EM DASH.
+_UNICODE_HYPHENS = str.maketrans(
+    {
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+    }
+)
+
+# Extraction pattern: a run of word chars, optionally continued across a single
+# apostrophe or hyphen into more word chars. Keeps `city's`, `ice-cream`,
+# `don't` whole; splits on everything else. `.` is deliberately NOT in the
+# joiner set -- adding it would glue `word.Next` together in scraped text with
+# missing spaces, a worse trade than losing `U.S.A.`.
+_WORD_RE = re.compile(r"\w+(?:['\-]\w+)*", re.UNICODE)
+
+
+def tokenize_string_v2(text, lower=True, normalize_digits=False):
+    """
+    Fixed whitespace/regex tokenizer (ADR 0002); see the module comment above.
+
+    Args:
+        text (str): the text to tokenize.
+        lower (bool): lowercase before extraction (default True).
+        normalize_digits (bool): replace every digit with "0" (default False --
+            digits are kept). True is the Levy-Goldberg-Dagan / hyperwords
+            convention this package reimplements.
+
+    Returns:
+        list[str]: the extracted tokens.
+    """
+    # NFC first: composes 'café' (NFD) back into 'café' so the accent
+    # is a word char instead of a `\W` combining mark that gets dropped.
+    text = unicodedata.normalize("NFC", text)
+    # canonicalize typographic variants before extraction so the joiner set
+    # ("'" and "-") covers curly apostrophes and Unicode hyphens too
+    text = text.replace(_CURLY_APOSTROPHE, "'").translate(_UNICODE_HYPHENS)
+    if lower:
+        text = text.lower()
+    if normalize_digits:
+        text = re.sub(r"\d", "0", text)
+    return _WORD_RE.findall(text)
+
+
+def tokenize_texts_v2(texts, lower=True, normalize_digits=False):
+    """
+    Serial v2 tokenizer over a list of texts (see `tokenize_string_v2`).
+    """
+    return [
+        tokenize_string_v2(t, lower=lower, normalize_digits=normalize_digits)
+        for t in texts
+    ]
+
+
+def tokenize_texts_parallel_v2(texts):
+    """
+    Parallel v2 tokenizer -- the new default `preproc_func` for the constructors.
+
+    Mirrors `tokenize_texts_parallel`'s scheduling exactly (same threshold, same
+    "no nested pool inside a worker" guard); only the per-item tokenizer differs.
+    It uses `tokenize_string_v2`'s defaults (`lower=True`, `normalize_digits=
+    False`). A caller who wants non-default v2 options passes an explicit
+    top-level `preproc_func` (e.g. `functools.partial` is *not* picklable-by-
+    reference; define a small module-level wrapper instead -- see docs/usage.md).
+    """
+    if not hasattr(texts, "__len__"):
+        texts = list(texts)
+
+    if multiprocessing.parent_process() is not None:
+        return tokenize_texts_v2(texts)
+
+    if sum(len(t) for t in texts) < PARALLEL_MIN_CHARS:
+        return tokenize_texts_v2(texts)
+
+    return map_pool(texts, tokenize_string_v2)
+
+
 def texts_to_sents(
     texts, model="en_core_web_sm", remove_stop=True, lemmatize=True, n_process=1
 ):
@@ -144,7 +288,7 @@ def texts_to_sents(
             without a guard an unguarded script re-enters this function and
             spawns pools forever.
     """
-    texts = [strip_tags(t) for t in texts]
+    texts = [_strip_tags(t) for t in texts]
     results = []
 
     if _import_spacy() is None:
@@ -174,7 +318,7 @@ def texts_to_sents(
             results.append(
                 [
                     simple_preproc(
-                        strip_non_alphanum(t.lemma_ if lemmatize else t.text)
+                        _strip_non_alphanum(t.lemma_ if lemmatize else t.text)
                     )
                     for t in s
                     if not any((t.is_punct, t.is_space, remove_stop and t.is_stop))

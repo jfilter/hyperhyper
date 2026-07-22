@@ -22,9 +22,13 @@ structural invariants a usable gold set must hold:
 * no exact-duplicate analogy rows.
 
 It also pins the parser-safety property the provenance headers rely on: a
-`#`-comment line must never be picked up by `setup_test_tokens` as a data row,
-which is only guaranteed as long as no comment line happens to split into
-exactly the field count the parser keeps.
+`#`-comment line must never be picked up by `setup_test_tokens` as a data row.
+Since ADR 0002 (roadmap 1) `setup_test_tokens` has real `#`-comment support --
+it skips comment lines by their leading `#` *before* the field-count filter --
+so this holds even for a comment that splits into exactly the kept field count.
+The linter asserts that the parser recovers exactly the intended data rows (no
+leaked comment, no dropped malformed line) and, separately, that a comment which
+does split into the field count is ignored rather than leaked.
 """
 
 from importlib.resources import files
@@ -98,15 +102,37 @@ def test_field_count(lang, kind, n_fields, name):
 
 
 @_PARAMS
-def test_no_comment_line_leaks_into_parser(lang, kind, n_fields, name):
-    # `setup_test_tokens` keeps every line with exactly `n_fields` fields, with
-    # no notion of comments. The provenance headers stay invisible to it only
-    # because no comment line splits into exactly `n_fields` tokens. Pin that:
-    # the parser must recover exactly the non-comment data rows -- no more (a
-    # leaked comment) and no fewer (a malformed data line).
+def test_parser_recovers_exactly_the_data_rows(lang, kind, n_fields, name):
+    # Since ADR 0002 `setup_test_tokens` skips `#`-comment lines by their leading
+    # `#` before the field-count filter, and warns-and-skips a malformed row.
+    # For a clean bundled file the parser must therefore recover exactly the
+    # non-comment, correctly-shaped data rows -- no more (a leaked comment) and
+    # no fewer (a dropped data line).
     columns = list(evaluation.setup_test_tokens(_path(lang, kind, name), n_fields))
     parsed = len(columns[0]) if columns else 0
     assert parsed == len(_rows(lang, kind, name))
+
+
+@_PARAMS
+def test_comment_with_field_count_is_ignored(lang, kind, n_fields, name, tmp_path):
+    # The old fragile invariant was "no comment line may split into exactly
+    # `n_fields` fields", because the parser had no notion of comments. ADR 0002
+    # retired it with real `#`-comment support. Prove the danger it guarded is
+    # gone: prepend to a real bundled file a `#`-comment that DOES split into
+    # exactly `n_fields` fields (`# a b` -> 3, `# a b c` -> 4). It must be
+    # ignored, so the parser still recovers exactly the file's own data rows and
+    # never leaks the comment as a `('#', 'a', ...)` row.
+    original = _path(lang, kind, name).read_text(encoding="utf-8")
+    leaky_comment = "# " + " ".join("abcdefg"[: n_fields - 1])
+    assert len(leaky_comment.split()) == n_fields  # it really is a would-be leak
+    spiked = tmp_path / name
+    spiked.write_text(leaky_comment + "\n" + original, encoding="utf-8")
+
+    columns = list(evaluation.setup_test_tokens(spiked, n_fields))
+    parsed = len(columns[0]) if columns else 0
+    assert parsed == len(_rows(lang, kind, name))
+    # the comment's leading `#` never entered the data columns
+    assert "#" not in columns[0]
 
 
 @_PARAMS

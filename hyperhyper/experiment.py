@@ -82,6 +82,20 @@ def record(func):
             **leftover,
         }
 
+        # The corpus tokenizer's identity is part of what produced these scores:
+        # a bunch built under `tokenize_texts_parallel` (v1) and one built under
+        # `tokenize_texts_parallel_v2` have different vocabularies and therefore
+        # different numbers, so the qualname joins the parameter columns (and the
+        # dedupe key) to keep v1 and v2 rows from colliding in results.db.
+        bunch = args[0] if args else None
+        preproc_fun = getattr(getattr(bunch, "corpus", None), "preproc_fun", None)
+        if preproc_fun is not None:
+            params["tokenizer"] = getattr(
+                preproc_fun,
+                "__qualname__",
+                getattr(preproc_fun, "__name__", repr(preproc_fun)),
+            )
+
         if len(results) > 1:
             db_dic = {}
             # params to dict

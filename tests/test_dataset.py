@@ -1,6 +1,7 @@
 import pytest
 
 import hyperhyper
+from hyperhyper import preprocessing
 from hyperhyper.preprocessing import texts_to_sents, tokenize_texts
 
 
@@ -69,6 +70,44 @@ def test_text_files_vocab_is_deterministic(tmp_path):
     assert len(first) == 60
     for _ in range(2):
         assert vocab_of() == first
+
+
+def test_from_texts_default_needs_no_spacy(monkeypatch):
+    """
+    ADR 0002 item 3: `from_texts` / `from_text_files` now default to the
+    lightweight v2 tokenizer, not spaCy. Building with the default must not
+    touch spaCy at all -- proven here by disabling it outright.
+    """
+    monkeypatch.setattr(preprocessing, "spacy", None)
+
+    corpus = hyperhyper.Corpus.from_texts(
+        ["The café in 2001 sold ice-cream.", "the city's café"]
+    )
+
+    assert corpus.preproc_fun is preprocessing.tokenize_texts_parallel_v2
+    # v2 keeps digits (default), keeps hyphenated/possessive words whole, and
+    # NFC-normalizes so "café" is one vocab entry
+    assert "2001" in corpus.vocab.token2id
+    assert "ice-cream" in corpus.vocab.token2id
+    assert "city's" in corpus.vocab.token2id
+    assert "café" in corpus.vocab.token2id
+
+
+def test_from_text_files_default_needs_no_spacy(monkeypatch, tmp_path):
+    """
+    Same default flip, through the folder-of-files constructor.
+    """
+    monkeypatch.setattr(preprocessing, "spacy", None)
+    directory = tmp_path / "docs"
+    directory.mkdir()
+    (directory / "a.txt").write_text("ice-cream and 2001 apples\n", encoding="utf-8")
+    (directory / "b.txt").write_text("the city's café\n", encoding="utf-8")
+
+    corpus = hyperhyper.Corpus.from_text_files(directory)
+
+    assert corpus.preproc_fun is preprocessing.tokenize_texts_parallel_v2
+    assert "ice-cream" in corpus.vocab.token2id
+    assert "2001" in corpus.vocab.token2id
 
 
 @pytest.mark.slow

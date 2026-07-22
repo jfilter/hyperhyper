@@ -178,13 +178,50 @@ def aggregate(full_results, kind):
 
 def setup_test_tokens(p, keep_len):
     """
-    Read in traning data from files and discard comments (etc.)
+    Read a similarity/analogy dataset file into its `keep_len` word/score columns.
+
+    Blank lines and comment lines are ignored. A comment is any line whose first
+    non-whitespace character is ``#`` (the provenance/metadata convention the
+    bundled files use) or ``:`` (a word2vec-style analogy section header such as
+    ``: capital-common-countries``). Comments are skipped *before* the field-count
+    check, so a comment that happens to split into exactly `keep_len` whitespace
+    fields -- e.g. ``# a b`` in a 3-field file, which splits into three tokens --
+    is no longer silently leaked as a data row. This retires ADR 0001's fragile
+    "a header must not split into the field count" invariant (ADR 0002, roadmap 1).
+
+    A non-blank, non-comment line that does *not* split into exactly `keep_len`
+    whitespace-separated fields is malformed. Rather than being dropped silently
+    (which hid typos and wrong column counts), it is reported with a
+    `logger.warning` naming the file, the 1-based line number and the offending
+    content, then skipped -- one bad row no longer aborts the whole evaluation,
+    but it is no longer invisible either.
+
+    Returns the kept columns as `zip(*rows, strict=True)`, exactly as before; the
+    per-field/per-pair scoring downstream is unchanged.
     """
-    lines = p.read_text(encoding="utf-8").split("\n")
-    lines = [line.split() for line in lines]
-    lines = [line for line in lines if len(line) == keep_len]
-    # every line has exactly `keep_len` fields after the filter above
-    return zip(*lines, strict=True)
+    kept = []
+    for lineno, line in enumerate(p.read_text(encoding="utf-8").split("\n"), 1):
+        stripped = line.strip()
+        if not stripped:
+            # blank lines are normal padding and skipped silently
+            continue
+        if stripped[0] in "#:":
+            # a real comment / section-header line, never a data row
+            continue
+        fields = line.split()
+        if len(fields) != keep_len:
+            logger.warning(
+                "%s:%d: skipping malformed line -- %d field(s), expected %d: %r",
+                p.name,
+                lineno,
+                len(fields),
+                keep_len,
+                line,
+            )
+            continue
+        kept.append(fields)
+    # every kept row has exactly `keep_len` fields after the checks above
+    return zip(*kept, strict=True)
 
 
 def eval_similarity(

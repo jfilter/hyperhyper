@@ -136,15 +136,103 @@ def test_eval_returns_nan_when_nothing_is_in_vocabulary(
     assert np.isnan(sims["micro"]) and np.isnan(sims["macro"])
 
 
-def test_setup_test_tokens(tmp_path):
+def test_setup_test_tokens(tmp_path, caplog):
     path = write_dataset(
         tmp_path,
         "toy",
         ["# comment", "athens greece baghdad iraq", "too few columns"],
     )
-    columns = list(evaluation.setup_test_tokens(path, 4))
-    # only the one line with exactly four columns survives
+    with caplog.at_level("WARNING"):
+        columns = list(evaluation.setup_test_tokens(path, 4))
+    # the comment is skipped and the one four-column line survives
     assert columns == [("athens",), ("greece",), ("baghdad",), ("iraq",)]
+    # the malformed data line is no longer dropped silently: it warns, naming
+    # the file, the 1-based line number and the offending content
+    (record,) = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert "toy.txt:3" in record.getMessage()
+    assert "too few columns" in record.getMessage()
+
+
+def test_setup_test_tokens_ignores_comment_that_splits_into_field_count(tmp_path):
+    """
+    ADR 0002 roadmap 1: a `#`-comment is skipped by its leading `#` *before* the
+    field-count filter, so a comment like `# a b` -- which splits into exactly
+    three whitespace fields and used to leak into a 3-field similarity file as a
+    data row -- is now safely ignored.
+    """
+    path = write_dataset(
+        tmp_path,
+        "leaky",
+        ["# a b", "athens greece 9", "greece iraq 5"],
+    )
+    columns = list(evaluation.setup_test_tokens(path, 3))
+    assert columns == [("athens", "greece"), ("greece", "iraq"), ("9", "5")]
+    # the same for a 4-field analogy file with a comment that splits into four
+    path = write_dataset(
+        tmp_path,
+        "leaky4",
+        ["# a b c", "athens greece baghdad iraq"],
+    )
+    columns = list(evaluation.setup_test_tokens(path, 4))
+    assert columns == [("athens",), ("greece",), ("baghdad",), ("iraq",)]
+
+
+def test_setup_test_tokens_skips_colon_section_headers(tmp_path):
+    """
+    A word2vec-style analogy section header (`: capital-common-countries`) is a
+    comment too: it must not warn as a malformed row and must not be scored.
+    """
+    path = write_dataset(
+        tmp_path,
+        "sections",
+        [": capital-common-countries", "athens greece baghdad iraq"],
+    )
+    columns = list(evaluation.setup_test_tokens(path, 4))
+    assert columns == [("athens",), ("greece",), ("baghdad",), ("iraq",)]
+
+
+def test_setup_test_tokens_warns_and_skips_malformed_row(tmp_path, caplog):
+    """
+    A genuinely malformed data row (wrong column count, not a comment, not
+    blank) is skipped so one bad row does not abort an evaluation -- but it is
+    reported with `logger.warning(file:line + content)`, not dropped silently.
+    """
+    path = write_dataset(
+        tmp_path,
+        "malformed",
+        [
+            "athens greece 9",
+            "greece iraq",  # a column short -- a typo'd row
+            "athens iraq 1",
+        ],
+    )
+    with caplog.at_level("WARNING"):
+        columns = list(evaluation.setup_test_tokens(path, 3))
+
+    # the two well-formed rows are recovered; the bad one is dropped
+    assert columns == [("athens", "athens"), ("greece", "iraq"), ("9", "1")]
+
+    (record,) = [r for r in caplog.records if r.levelname == "WARNING"]
+    message = record.getMessage()
+    assert "malformed.txt:2" in message
+    assert "greece iraq" in message
+
+
+def test_setup_test_tokens_clean_file_warns_nothing(tmp_path, caplog):
+    """A normal, well-formed file parses unchanged and emits no warning."""
+    path = write_dataset(
+        tmp_path,
+        "clean",
+        ["athens greece 9", "greece iraq 5", "athens iraq 1"],
+    )
+    with caplog.at_level("WARNING"):
+        columns = list(evaluation.setup_test_tokens(path, 3))
+    assert columns == [
+        ("athens", "greece", "athens"),
+        ("greece", "iraq", "iraq"),
+        ("9", "5", "1"),
+    ]
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
 
 
 # analogies

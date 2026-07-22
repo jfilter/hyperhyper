@@ -117,14 +117,13 @@ on its own merits rather than pre-migrating `ws`/`analogy` for it.
 
 ## Two judgment calls worth the maintainer's eye
 
-1. **Digit normalization default.** Fable keeps digit→`0` as the default (the
-   Levy-Goldberg-Dagan / hyperwords convention this package reimplements); Codex
-   defaults to keeping digits (for domain corpora where `IL-6`, years, model
-   numbers carry meaning). Both agree it must become an explicit parameter. The
-   recommendation here leans **keep digits by default** — the stated audience is
-   small *domain* corpora — with the legacy digit→`0` available and documented.
-   This is a values call (paper fidelity vs domain usefulness), flagged as
-   reconsiderable.
+1. **Digit normalization default. DECIDED (2026-07-22): keep digits by default.**
+   Fable kept digit→`0` (the Levy-Goldberg-Dagan / hyperwords convention this
+   package reimplements); Codex defaulted to keeping digits (for domain corpora
+   where `IL-6`, years, model numbers carry meaning). Both agreed it must become an
+   explicit parameter. The maintainer chose **keep digits by default** — the stated
+   audience is small *domain* corpora — with legacy digit→`0` available as an
+   option and documented as the paper's convention.
 2. **Not migrating to TSV.** The proportionate choice above; recorded explicitly so
    a future maintainer sees it was a decision, not an oversight.
 

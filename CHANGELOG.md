@@ -7,6 +7,23 @@ Everything below is user-visible; several items change numeric results.
 
 ### Added
 
+-   **A modern default tokenizer, `tokenize_string_v2`** (ADR 0002). NFC-normalizes
+    first (so a decomposed `café` no longer loses its accent and splits into a
+    second vocab entry), canonicalizes curly apostrophes and Unicode hyphens, and
+    *extracts* words instead of destroying punctuation — `city's`, `ice-cream`,
+    `don't` stay whole where the old tokenizer shattered them. Digits are kept by
+    default (`normalize_digits=True` restores the Levy-Goldberg-Dagan digit→`0`
+    convention). It lands under a new name; the old `tokenize_string` is unchanged,
+    so existing bunches (which pickle their tokenizer by reference) are bit-for-bit
+    unaffected.
+-   **`preproc_func` is documented as the tokenizer plug-in point** — a picklable
+    top-level `Callable[[list[str]], list[list[str]]]`, applied consistently to the
+    corpus and the evaluation test words; the tokenizer's identity is now recorded
+    with each result so v1 and v2 numbers are attributable and never collide.
+-   Evaluation files gained a **real `#`-comment convention** and word2vec `:`
+    section-header support; a malformed data row now emits a warning naming the
+    file and line instead of vanishing silently.
+
 -   **French analogy dataset** (`evaluation_datasets/fr/analogy/capitals.txt`) —
     the first new language, and the first generated dataset (ADR 0001 phase P2).
     315 capital→country analogies from 63 base pairs, each fact independently
@@ -344,6 +361,15 @@ and evaluation (28%).
     `results(query={"min_count": 0})` matched nothing.
 
 ### Changed
+
+-   **`from_texts` / `from_text_files` default to the lightweight tokenizer, not
+    spaCy** (ADR 0002). They used to default to `texts_to_sents` (spaCy
+    sentence-splitting + lemmatization, needs a model); now all constructors
+    default to `tokenize_texts_parallel_v2`, so the package is lightweight by
+    default everywhere. `texts_to_sents` stays available as an explicit
+    `preproc_func`. This changes the vocabulary — and therefore evaluation numbers —
+    for **new** corpora built with the default; existing bunches are unaffected.
+
 
 -   Packaging moved from Poetry to PEP 621 + hatchling; `poetry.lock` replaced by
     `uv.lock`.

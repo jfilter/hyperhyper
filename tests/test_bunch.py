@@ -389,6 +389,43 @@ def test_record_binds_positional_and_default_arguments(corpus, bunch_path):
     assert len(bunch.results(query={"cds": 0.75})) == 2
 
 
+def test_record_captures_the_tokenizer_identity(corpus, bunch_path):
+    """
+    ADR 0002 item 5: the corpus tokenizer's qualname joins the recorded
+    parameters, so scores computed under v1 and v2 are attributable and never
+    collide in results.db. The `corpus` fixture uses `tokenize_texts`.
+    """
+    bunch = hyperhyper.Bunch(bunch_path, corpus, force_overwrite=True)
+    bunch.svd(dim=2)
+
+    row = bunch.results()[0]
+    assert row["tokenizer"] == "tokenize_texts"
+    # and it is a real, queryable parameter column
+    assert len(bunch.results(query={"tokenizer": "tokenize_texts"})) == 1
+    assert bunch.results(query={"tokenizer": "tokenize_texts_parallel_v2"}) == []
+
+
+def test_record_tokenizer_identity_separates_v1_and_v2(tmp_path):
+    """
+    Two corpora that differ *only* in their tokenizer must not overwrite each
+    other's row: the same run under v1 and v2 has different vocab and different
+    numbers, so the recorded `tokenizer` column keeps them as distinct rows.
+    """
+    from hyperhyper.preprocessing import tokenize_texts, tokenize_texts_v2
+
+    texts = ["the english wikipedia 2001", "english wikipedia founded"] * 20
+    v1 = hyperhyper.Corpus.from_sents(texts, preproc_func=tokenize_texts)
+    v2 = hyperhyper.Corpus.from_sents(texts, preproc_func=tokenize_texts_v2)
+
+    hyperhyper.Bunch(tmp_path / "v1", v1, force_overwrite=True).svd(dim=2)
+    with hyperhyper.Bunch(tmp_path / "v1") as b1:
+        assert b1.results()[0]["tokenizer"] == "tokenize_texts"
+
+    hyperhyper.Bunch(tmp_path / "v2", v2, force_overwrite=True).svd(dim=2)
+    with hyperhyper.Bunch(tmp_path / "v2") as b2:
+        assert b2.results()[0]["tokenizer"] == "tokenize_texts_v2"
+
+
 def test_record_attributes_kwargs_to_pair_args(corpus, bunch_path):
     """
     A loose `window=` is forwarded to `count_pairs`, so it must be recorded as
