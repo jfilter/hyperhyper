@@ -165,11 +165,24 @@ still shipped and became the legacy read path, so it was not wasted.
    default-flipped; record tokenizer identity in the results DB.
 6. curated-v3: restore the tokenizer-induced dropped rows.
 7. (Opportunistic) npz id-chunks replacing `texts_N.pkl`; atomic writes;
-   bunch-directory trust note. **Partly done 2026-07-22:** atomic writes and the
-   trust note shipped, together with an explicit `allow_pickle=False` on every
-   numpy load. Replacing the chunk pickles with npz is still deferred -- they are
-   a regenerable derived cache, and a holistic bunch-format revision remains the
-   right scope for that.
+   bunch-directory trust note. **Done 2026-07-22.** Atomic writes, the trust note
+   and an explicit `allow_pickle=False` on every numpy load shipped first; the
+   npz id-chunks followed in the same day's work, once measurement made the case
+   for them independently of the trust argument (they load 6x faster, and they
+   are the exact layout the vectorized counter builds for itself).
+
+   That leaves **`corpus.pkl` as the only pickle left in a bunch directory** —
+   40 of its 41 files are now data rather than code. Rewriting it is still
+   deferred, and for the original reason: a holistic bunch-format revision is
+   the right scope, not a piecemeal change. Note that this one is load-bearing in
+   a way the chunks were not — it carries `preproc_func` **by reference**, which
+   is how existing bunches keep their tokenizer across the ADR's default flip, so
+   any replacement has to answer that question first.
+
+   The migration also surfaced a bug worth recording here: the per-chunk RNG was
+   seeded from the chunk's full **filename**, so `texts_0.pkl` and `texts_0.npz`
+   drew different numbers and the on-disk format was part of the answer. Any
+   future format change must check for the same class of leak.
 
 ## Alternatives considered
 
