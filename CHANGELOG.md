@@ -2,8 +2,22 @@
 
 ## Unreleased
 
-Modernization of the package for current Python and dependency versions.
-Everything below is user-visible; several items change numeric results.
+## 0.2.0 - 2026-07-22
+
+Modernization of the package for current Python and dependency versions, plus
+the bug fixes and evaluation-data work that came out of it. Everything below is
+user-visible.
+
+> **Reported numbers move in this release, and that is the point.** Several of
+> the fixes below were wrong *answers*, not slow ones: word-analogy accuracy was
+> structurally 0.0, word-similarity gold scores were ranked as strings, the
+> cache key ignored `**kwargs` so results depended on call order, and
+> `subsample="prob"` used word2vec's *discard* probability as a *keep*
+> probability. The evaluation data was also cleaned and extended. **Do not
+> compare a score from 0.1.x with a score from 0.2.0** -- they are not measuring
+> the same thing. Scores computed with the same version remain reproducible, and
+> the tokenizer identity is now recorded with every result so old and new
+> numbers cannot silently collide.
 
 ### Added
 
