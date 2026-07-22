@@ -17,10 +17,14 @@ hold:
   symmetric similarity task, order-insensitive too (cosine is symmetric, so
   `a b` and `b a` are the same pair);
 * no self-pairs (`w w`);
-* every entry collapsing to exactly one token under the package's own
-  preprocessing (`tokenize_string`), because the scorer can only ever look up a
-  single token -- a hyphenated or multi-word entry is unscoreable (TSV can now
-  *represent* it, but the unigram evaluator still treats it as OOV);
+* every entry collapsing to exactly one token under the package's *current
+  default* preprocessing (`tokenize_string_v2`, ADR 0002), because the scorer can
+  only ever look up a single token -- a genuinely multi-word entry is unscoreable
+  (TSV can now *represent* it, but the unigram evaluator still treats it as OOV).
+  Linting against v2 rather than v1 is load-bearing: v1 shattered
+  `narrow-mindedness` and `city's`, which is why curated-v2 had to drop ~1030
+  otherwise-good rows; v2 keeps them whole and curated-v3 restored them, so a v1
+  check here would reject correct data;
 * for analogy rows: the four tokens are distinct, and the answer `b_prime` is not
   one of the query words `a`, `a_prime`, `b` (such a row is unanswerable because
   the scorer excludes the query words), checked on the surface form before
@@ -41,7 +45,7 @@ import pytest
 
 from hyperhyper import evaluation, evaluation_datasets
 from hyperhyper.evaluation import DuplicateDatasetError, MalformedDatasetError
-from hyperhyper.preprocessing import tokenize_string
+from hyperhyper.preprocessing import tokenize_string_v2
 
 # kind -> number of tab-separated columns `setup_test_tokens` keeps for that kind
 KIND_FIELDS = {"ws": 3, "analogy": 4}
@@ -104,7 +108,7 @@ def _data_rows(lang, kind, name):
 
 
 def _single_token(entry):
-    toks = tokenize_string(entry)
+    toks = tokenize_string_v2(entry)
     return len(toks) == 1
 
 
@@ -165,7 +169,7 @@ def test_single_token_entries(lang, kind, n_fields, name):
     for ln, f in _data_rows(lang, kind, name):
         for entry in f[: 2 if kind == "ws" else 4]:
             if not _single_token(entry):
-                offenders.append((ln, entry, tokenize_string(entry)))
+                offenders.append((ln, entry, tokenize_string_v2(entry)))
     assert not offenders, f"{name}: multi-token entries: {offenders[:5]}"
 
 

@@ -7,6 +7,16 @@ Everything below is user-visible; several items change numeric results.
 
 ### Added
 
+-   **curated-v3 restores 1030 evaluation rows** the old tokenizer had made
+    unscoreable (`de/ws/gur350` +10, `en/ws/luong_rare` +20, `en/analogy/msr`
+    +1000). Those rows were dropped in curated-v2 not because the data was bad but
+    because v1 shattered `narrow-mindedness` and `city's` into two tokens; v2 keeps
+    them whole, so `gur350` and `msr` are back at their original upstream sizes.
+    No gold score or answer changed — the rows are verbatim from upstream.
+    curated-v2's genuine data-quality drops (conflicting duplicates, self-pairs,
+    exact duplicates, answer-collapse rows) remain dropped. This *increases*
+    evaluation coverage and therefore moves the reported numbers again.
+
 -   **A modern default tokenizer, `tokenize_string_v2`** (ADR 0002). NFC-normalizes
     first (so a decomposed `café` no longer loses its accent and splits into a
     second vocab entry), canonicalizes curly apostrophes and Unicode hyphens, and

@@ -14,6 +14,18 @@
 #   removed-multitoken: [umklappen Berlin-Kreuzberg = 0] (entry 'Berlin-Kreuzberg' -> ['berlin', 'kreuzberg'])
 #   removed-multitoken: [Van Sports-Tourer = 2.38] (entry 'Sports-Tourer' -> ['sports', 'tourer'])
 # rows before cleaning: 350; rows after: 340.
+# curated-v3 restoration per ADR 0002 ('re-curate after v2'); applied 2026-07-22. Only
+# rows were re-added, verbatim from the pre-curated-v2 source; no gold score was
+# altered.
+# Restored 10 row(s) that curated-v2 had removed as multi-token: they were unscoreable
+# only because the v1 tokenizer (tokenize_string) shattered intra-word punctuation --
+# hyphenated compounds (e.g. 'Berlin-Kreuzberg', 'TV-Kamera', 'Premium-Hersteller'). The
+# v2 tokenizer (tokenize_string_v2, now the default) keeps them whole, so each entry is
+# again exactly one token and the scorer can represent it.
+# The curated-v2 data-quality drops (conflicting duplicates, exact duplicates, self-
+# pairs, analogy answer-collapse rows) were not tokenizer-induced and remain dropped.
+# Genuinely multi-word entries would stay dropped regardless (a unigram vocab can never
+# score them); this file has none. rows after curated-v3: 350.
 word1	word2	score
 Absage	ablehnen	3.5
 Absage	Stellenanzeige	1.88
@@ -44,6 +56,7 @@ Behörde	Vorschrift	2.75
 beinhalten	umfassen	3.25
 Benedetto	Benedikt	3.63
 Benziner	Dieselversion	3
+Berlin	Berlin-Kreuzberg	3.38
 Berufstätigkeit	Erfolg	2.13
 beschleunigen	übertreiben	1.13
 beschuldigen	Mitschuld	2.5
@@ -154,6 +167,7 @@ italienisch	vergehen	0
 Jäger	Wald	2.75
 Kaffeetasse	parallel	0
 Kaffeetasse	Tasse	3.75
+Kamera	TV-Kamera	3.75
 kämpfen	idyllisch	0.13
 kämpfen	Veterinär	0.38
 Karriere	hinaufklettern	2
@@ -187,6 +201,7 @@ männlich	Weiblich	3.13
 Marktl	Bayern	2.25
 Mehrarbeit	Workaholic	2
 Meinung	Überzeugung	3.13
+Mercedes	Premium-Hersteller	2.63
 Minister	Außenminister	3.38
 Minister	Ministerpräsident	3.38
 Minister	Politiker	3.25
@@ -214,6 +229,8 @@ Platz	aufgebläht	0.13
 Platz	Petersplatz	3.13
 Pontifikat	Papst	3.38
 Post	Portokosten	3
+Premium-Hersteller	Opel	1.63
+Premium-Hersteller	VW	2
 Problem	Schwierigkeit	3.25
 Projekt	Aktion	2
 Prozentzeichen	Symbol	3.38
@@ -222,15 +239,18 @@ Punktverlust	Platz	1.13
 Ratzinger	Papst	3.38
 Relevanz	relevant	3.88
 riesig	üppig	2.63
+rot-weiß	weißblau	2.75
 sachlich	Seriosität	2.13
 sagen	erklären	2.13
 sagen	mitteilen	3.13
+Sandwich-Konzept	Sicherheit	0.5
 schauen	sehen	3.75
 Schleusung	Betrugshandlung	2.13
 schließen	Überlegung	0.88
 Schrank	Küchenschrank	3.38
 Schwabe	sparen	2.75
 Schwabe	Stuttgarter	3.38
+Seitenansicht	A-Säule	0.88
 Selbstinszenierung	Beziehungsarbeit	0.5
 serienmäßig	extra	2.13
 Sicherheit	Frontalkollision	1.63
@@ -297,6 +317,7 @@ Traurigkeit	Heimgang	1.13
 Überzeugung	Zweifel	2.63
 Umfrage	Erfolg	0.13
 Umfrage	Quartalsumfrage	2.88
+umklappen	Berlin-Kreuzberg	0
 umklappen	flachlegen	1.63
 Unternehmen	Dieselversion	0
 Unternehmen	Firma	3.63
@@ -304,6 +325,7 @@ untersuchen	Benedikt	0
 untersuchen	suchen	2.5
 Untersuchungsausschuss	aussagen	1.88
 Untersuchungsausschuss	umfassen	0.38
+Van	Sports-Tourer	2.38
 Van	Vorschrift	0.25
 Vatikan	ausgehen	0.13
 Vatikan	Katholik	3.25
