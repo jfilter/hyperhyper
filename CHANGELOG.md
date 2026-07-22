@@ -7,6 +7,27 @@ Everything below is user-visible; several items change numeric results.
 
 ### Added
 
+-   **A dead worker now explains itself.** A script without an
+    `if __name__ == "__main__":` guard makes every spawned worker re-run the
+    script from the top — including the `hyperhyper` call that started the pool —
+    so the pool recurses and collapses. The stdlib reports this as "A process in
+    the process pool was terminated abruptly", which names a symptom and gives
+    the reader nothing to act on. Both pools (tokenization and pair counting) now
+    raise `hyperhyper.utils.BrokenProcessPool` with the cause, the fix, and a
+    note that a notebook or REPL is unaffected. The original exception is
+    chained.
+
+-   **The pair-counting benchmark works again.** `bench/bench_pair_counts.py`
+    kept a hand-written copy of `count_pairs`' argument translation, and the copy
+    drifted: when the `dirty` subsampling variant landed, the benchmark was not
+    updated and every run died with `AttributeError: ... has no attribute
+    'subsampler_dirty'`. Both now call one shared
+    `pair_counts.make_count_closure`, and `CountPairsClosure` names its fields
+    explicitly instead of swallowing `**kwargs`, so an out-of-date construction
+    site fails at construction with the missing argument named rather than in the
+    middle of counting. A benchmark that cannot run is worse than none — it looks
+    like a safety net.
+
 -   **Cache files are written atomically.** Every artifact in a bunch directory —
     the count and PMI matrices, the SVD arrays, the corpus and text-chunk pickles —
     is now written to a sibling temporary file and renamed into place. An

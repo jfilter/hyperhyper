@@ -18,6 +18,42 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 
+class BrokenProcessPool(RuntimeError):
+    """
+    A worker pool died. Nearly always a missing ``if __name__ == "__main__":``.
+
+    Raised in place of `concurrent.futures.process.BrokenProcessPool`, whose own
+    message ("A process in the process pool was terminated abruptly") names a
+    symptom and gives the reader nothing to act on.
+    """
+
+
+_MISSING_MAIN_GUARD = """\
+a worker process died while `hyperhyper` was parallelising.
+
+The overwhelmingly common cause is a script without a main guard. On macOS and
+Windows (and anywhere `multiprocessing` uses the "spawn" start method) each
+worker re-imports your script to reach the function it must run. Without a
+guard, that re-import runs your script *again* from the top -- including the
+`hyperhyper` call that started the pool -- so every worker starts its own pool,
+and the recursion collapses.
+
+Wrap the top-level code of your script:
+
+    def main():
+        corpus = hyperhyper.Corpus.from_texts(texts)
+        ...
+
+    if __name__ == "__main__":
+        main()
+
+In a notebook or REPL this cannot happen, and there is nothing to change.
+
+If your script already has the guard, the worker died for another reason -- most
+often it ran out of memory. The original exception is chained below.\
+"""
+
+
 def _default_workers():
     """
     Number of usable CPUs, respecting affinity/cgroup limits where available.
@@ -147,15 +183,18 @@ def map_pool(array, fun, total=None, desc=None, process_chunksize=100):
     work back onto one worker.
     """
     with futures.ProcessPoolExecutor(_default_workers()) as executor:
-        if desc is None:
-            return list(executor.map(fun, array, chunksize=process_chunksize))
-        return list(
-            tqdm(
-                executor.map(fun, array, chunksize=process_chunksize),
-                total=len(array) if total is None else total,
-                desc=desc,
+        try:
+            if desc is None:
+                return list(executor.map(fun, array, chunksize=process_chunksize))
+            return list(
+                tqdm(
+                    executor.map(fun, array, chunksize=process_chunksize),
+                    total=len(array) if total is None else total,
+                    desc=desc,
+                )
             )
-        )
+        except futures.process.BrokenProcessPool as e:
+            raise BrokenProcessPool(_MISSING_MAIN_GUARD) from e
 
 
 def delete_folder(pth):

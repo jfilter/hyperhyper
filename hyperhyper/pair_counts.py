@@ -19,7 +19,12 @@ from scipy import sparse
 from scipy.sparse import coo_matrix
 from tqdm import tqdm
 
-from .utils import _default_workers, read_pickle
+from .utils import (
+    _MISSING_MAIN_GUARD,
+    BrokenProcessPool,
+    _default_workers,
+    read_pickle,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +184,13 @@ def _parallel_results(texts_paths, count_pairs_closure, workers):
                 # between yields, and a worker must not wait on that
                 for nxt in islice(paths, 1):
                     pending[executor.submit(count_pairs_closure, nxt)] = nxt
-                yield path, job.result()
+                try:
+                    result = job.result()
+                except futures.process.BrokenProcessPool as e:
+                    # the stdlib message names a symptom and gives the reader
+                    # nothing to act on; see `utils.BrokenProcessPool`
+                    raise BrokenProcessPool(_MISSING_MAIN_GUARD) from e
+                yield path, result
 
 
 def count_pairs_parallel(texts_paths, count_pairs_closure):
@@ -231,14 +242,78 @@ def count_pairs_parallel(texts_paths, count_pairs_closure):
     return res
 
 
+def make_count_closure(
+    corpus,
+    *,
+    window,
+    dynamic_window,
+    decay_rate,
+    delete_oov,
+    subsample,
+    subsampler_prob,
+    seed,
+):
+    """
+    Translate `count_pairs`' mode strings into a worker closure.
+
+    This exists so there is exactly **one** place that turns the public
+    parameters into the booleans `iterate_tokens` reads. It used to be inline in
+    `count_pairs`, with `bench/bench_pair_counts.py` keeping a hand-written copy
+    whose docstring said "if the rewrite changes how a worker is configured, fix
+    it here" -- an invitation to drift that was duly accepted: when the `dirty`
+    subsampling variant landed, the benchmark's copy was not updated and every
+    run died with `AttributeError: 'CountPairsClosure' object has no attribute
+    'subsampler_dirty'`. A benchmark that cannot run is worse than none, because
+    it looks like a safety net.
+    """
+    return CountPairsClosure(
+        window=window,
+        dynamic_window_prob=dynamic_window == "prob",
+        dynamic_window_deter=dynamic_window == "deter",
+        dynamic_window_decay=decay_rate if dynamic_window == "decay" else None,
+        delete_oov=delete_oov,
+        subsampler_prob=subsampler_prob,
+        subsampler_dirty=subsample == "dirty",
+        vocab_size=corpus.vocab.size,
+        seed=seed,
+    )
+
+
 class CountPairsClosure:
     """
     creating a closure, has to be an object to be pickle-able when doing
     multiprocessing
+
+    The fields are named explicitly rather than swallowed through `**kwargs`.
+    A `self.__dict__.update(kwargs)` accepts a caller that forgets a field and
+    defers the failure to the middle of counting -- possibly inside a worker
+    process, where the traceback is least useful. Naming them makes an
+    out-of-date construction site fail at construction, with the missing
+    argument named.
     """
 
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
+    def __init__(
+        self,
+        *,
+        window,
+        dynamic_window_prob,
+        dynamic_window_deter,
+        dynamic_window_decay,
+        delete_oov,
+        subsampler_prob,
+        subsampler_dirty,
+        vocab_size,
+        seed,
+    ):
+        self.window = window
+        self.dynamic_window_prob = dynamic_window_prob
+        self.dynamic_window_deter = dynamic_window_deter
+        self.dynamic_window_decay = dynamic_window_decay
+        self.delete_oov = delete_oov
+        self.subsampler_prob = subsampler_prob
+        self.subsampler_dirty = subsampler_dirty
+        self.vocab_size = vocab_size
+        self.seed = seed
 
     def __call__(self, text_path):
         texts = read_pickle(text_path)
@@ -437,15 +512,14 @@ def count_pairs(
 
     count_matrix = count_pairs_parallel(
         corpus.texts,
-        CountPairsClosure(
+        make_count_closure(
+            corpus,
             window=window,
-            dynamic_window_prob=dynamic_window == "prob",
-            dynamic_window_deter=dynamic_window == "deter",
-            dynamic_window_decay=decay_rate if dynamic_window == "decay" else None,
+            dynamic_window=dynamic_window,
+            decay_rate=decay_rate,
             delete_oov=delete_oov,
+            subsample=subsample,
             subsampler_prob=subsampler_prob,
-            subsampler_dirty=subsample == "dirty",
-            vocab_size=corpus.vocab.size,
             seed=seed,
         ),
     )

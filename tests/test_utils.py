@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pytest
 from scipy.sparse import csr_matrix
@@ -139,3 +141,17 @@ def test_load_arrays_refuses_a_pickled_object_array(tmp_path):
     np.savez(path, a1=np.array([{"code": "here"}], dtype=object), a2=np.arange(2.0))
     with pytest.raises(ValueError, match="allow_pickle=False"):
         utils.load_arrays(path)
+
+
+def _kill_own_process(_x):
+    """A worker that dies without raising -- what a spawn recursion looks like."""
+    os._exit(1)
+
+
+def test_map_pool_explains_a_dead_worker(tmp_path):
+    # The stdlib raises "A process in the process pool was terminated abruptly",
+    # which names a symptom and leaves the reader with nothing to act on. In
+    # practice the cause is nearly always a script without an
+    # `if __name__ == "__main__":` guard, so the message has to say so.
+    with pytest.raises(utils.BrokenProcessPool, match=r'__name__ == "__main__"'):
+        utils.map_pool([1, 2, 3], _kill_own_process, process_chunksize=1)

@@ -145,30 +145,31 @@ def make_closure(corpus, kwargs):
     """
     Build the same `CountPairsClosure` that `count_pairs` hands to its workers.
 
-    This mirrors the argument translation in `count_pairs` (mode strings ->
-    booleans, plus the subsampling keep probabilities). It is the one seam this
-    script reaches into: if the rewrite changes how a worker is configured, fix
-    it here.
+    It calls `pair_counts.make_count_closure`, the *same* translation
+    `count_pairs` uses, rather than reproducing it. This function used to keep a
+    hand-written copy, and the copy drifted: when the `dirty` subsampling variant
+    landed the copy was not updated, so every benchmark run died with
+    `AttributeError: ... has no attribute 'subsampler_dirty'`. A benchmark that
+    cannot run is worse than no benchmark, because it looks like a safety net.
     """
     total_tokens = sum(corpus.counts.values())
     subsample_value = SUBSAMPLE_FACTOR * total_tokens
-    dynamic_window = kwargs.get("dynamic_window")
     subsample = kwargs.get("subsample")
 
     subsampler_prob = None
-    if subsample == "prob":
+    if subsample in ("prob", "dirty"):
         subsampler_prob = pair_counts.subsample_keep_probabilities(
             corpus.counts, subsample_value
         )
 
-    return pair_counts.CountPairsClosure(
+    return pair_counts.make_count_closure(
+        corpus,
         window=kwargs.get("window", 2),
-        dynamic_window_prob=dynamic_window == "prob",
-        dynamic_window_deter=dynamic_window == "deter",
-        dynamic_window_decay=0.25 if dynamic_window == "decay" else None,
+        dynamic_window=kwargs.get("dynamic_window"),
+        decay_rate=0.25,
         delete_oov=True,
+        subsample=subsample,
         subsampler_prob=subsampler_prob,
-        vocab_size=corpus.vocab.size,
         seed=1312,
     )
 

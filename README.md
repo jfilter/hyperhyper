@@ -185,14 +185,33 @@ tests and respect the correctness gate around the counting code.
 
 ## Future Work / TODO
 
--   Vectorize pair counting — **but profile first.** The counting in
-    `hyperhyper/pair_counts.py` is still pure Python (`iterate_tokens`), and
-    rewriting it in numpy is the obvious next optimisation. It was measured
-    before being attempted, and the measurement did not support the premise:
-    counting accounted for ~8.6% of end-to-end runtime, of which the token loop
-    itself is roughly a quarter. The large win found in the same profile was
-    elsewhere (evaluation process-pool startup, ~28% of runtime, now ~0). So this
-    is a real but *small* item, not the bottleneck it looks like.
+-   Vectorize pair counting. The counting in `hyperhyper/pair_counts.py` is still
+    pure Python (`iterate_tokens`), and rewriting it in numpy is the obvious next
+    optimisation. Measured on a 1.5M-token synthetic corpus (`window=2`,
+    `dynamic_window="deter"`, 10-core M1 Pro, Python 3.12), a full
+    corpus→count→PMI→SVD→evaluate run splits as:
+
+    | stage | time | share |
+    |---|---:|---:|
+    | tokenization (`Corpus.from_sents`) | 4.05s | 32.6% |
+    | **pair counting** | **3.50s** | **28.2%** |
+    | SVD | 4.36s | 35.2% |
+    | PMI | 0.37s | 3.0% |
+    | evaluation | 0.03s | 0.2% |
+
+    Inside counting, `cProfile` puts ~55% in `iterate_tokens` and ~32% in the
+    dictionary accumulation around it — i.e. roughly 85% is the pure-Python part
+    a vectorized rewrite would replace. So the ceiling here is real: several
+    percent of end-to-end per doubling of the loop's speed.
+
+    Note that the pool usually does *not* run at this size — `count_pairs`
+    estimates the serial cost and skips the pool when its ~3s spawn startup would
+    not pay for itself, which at 1.5M tokens it does not. The number above is
+    therefore single-core work, not a parallelism artefact.
+
+    (An earlier revision of this section claimed counting was ~8.6% of runtime
+    with the loop "roughly a quarter" of that. The measurement above does not
+    support it and supersedes it.)
 
     A correctness gate is in place for whoever does it:
     `tests/test_pair_counts_equivalence.py` compares the live counter against a
