@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+-   **`bench/bench_svd.py` — which SVD backend to use, measured.** The package
+    offered three (`scipy` exact, `gensim` and `scikit` randomized) and never said
+    which to pick. It reports speed *and* fidelity in the terms the package
+    actually consumes: agreement of the resulting cosine similarities and of the
+    top-10 nearest neighbours with the exact backend, rather than raw singular
+    vectors (which are only defined up to sign and rotation, so comparing them
+    would be misleading).
+
+    The finding: the randomized backends are **not a free speedup**. On a
+    5001x5001 PPMI matrix, `scikit` runs 2.4-3.7x faster but shares only 0.69-0.86
+    of the exact backend's top-10 neighbours; `gensim` is 1.2-1.7x faster at
+    0.59-0.82. `scipy` therefore stays the default, and `gensim` is *dominated* by
+    `scikit`, which is both faster and more accurate at every dimension tested.
+    `docs/usage.md` now says so under `impl`.
+
 ## 0.2.0 - 2026-07-22
 
 Modernization of the package for current Python and dependency versions, plus

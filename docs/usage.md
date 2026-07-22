@@ -220,6 +220,29 @@ matrix. This is usually what you want.
 - **`impl`** (default `"scipy"`): the SVD backend. One of `"scipy"` (exact
   truncated SVD via `scipy.sparse.linalg.svds`), `"gensim"` (randomized), or
   `"scikit"` (randomized via scikit-learn, which needs the `full` extra).
+
+  The randomized backends are an **approximation, and it shows in the results** —
+  this is a real trade, not a free speedup. Measured on a 5001×5001 PPMI matrix
+  (`bench/bench_svd.py`, which reports these columns for your own data):
+
+  | backend | speed vs `scipy` | top-10 neighbours shared with `scipy` | cosine rank corr. |
+  |---|---:|---:|---:|
+  | `scipy` | 1.0x | (exact) | (exact) |
+  | `scikit` | 2.4–3.7x | 0.69–0.86 | 0.88–0.91 |
+  | `gensim` | 1.2–1.7x | 0.59–0.82 | 0.78–0.87 |
+
+  So: **keep `"scipy"` unless the SVD is actually your bottleneck.** A third of
+  the nearest neighbours changing is not a rounding difference — at `dim=100` the
+  randomized backends agree with the exact one on barely two thirds of the top
+  ten. Accuracy improves as `dim` grows (the randomized range-finder has more
+  room), so the trade is least bad for large `dim`, which is also where the
+  speedup is biggest.
+
+  If you do want the speed, **use `"scikit"`, not `"gensim"`**: it is faster
+  *and* closer to the exact answer on every measure and every dimension tested,
+  so `"gensim"` is dominated. It remains available because it needs no extra
+  dependency, and because changing a default silently would move existing
+  results.
 - **`impl_args`** (default `None`): a dict of extra keyword arguments passed
   straight to the chosen backend.
 
