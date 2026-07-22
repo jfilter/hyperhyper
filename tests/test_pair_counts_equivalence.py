@@ -785,3 +785,110 @@ def test_delete_oov_actually_changes_the_matrix(oov_corpus):
         "the fixture corpus has no out-of-vocabulary token, so delete_oov "
         "cannot be exercised by it"
     )
+
+
+# --------------------------------------------------------------------------
+# the vectorized deterministic counter
+# --------------------------------------------------------------------------
+
+
+def _closure(corpus, **kwargs):
+    kwargs.setdefault("window", 5)
+    kwargs.setdefault("dynamic_window", "deter")
+    kwargs.setdefault("decay_rate", 0.25)
+    kwargs.setdefault("delete_oov", True)
+    kwargs.setdefault("subsample", None)
+    kwargs.setdefault("subsampler_prob", None)
+    kwargs.setdefault("seed", 1312)
+    return pair_counts.make_count_closure(corpus, **kwargs)
+
+
+def test_vectorized_path_is_actually_taken(grid_corpus):
+    """
+    The gate above would pass just as happily if `count_texts_vectorized`
+    returned `None` every time and everything quietly fell back to the loop --
+    bit-identical, and pointless. Assert the fast path really runs.
+    """
+    texts = read_pickle(grid_corpus.texts[0])
+    assert _closure(grid_corpus).count_texts_vectorized(texts) is not None
+
+
+@pytest.mark.parametrize("subsample", ["prob", "dirty"])
+def test_randomized_configs_stay_on_the_loop(grid_corpus, subsample):
+    """
+    The randomized modes must not be routed through the vectorized path: their
+    per-token draw order is a contract, and the fast path draws nothing at all.
+    """
+    keep = pair_counts.subsample_keep_probabilities(grid_corpus.counts, 1.0)
+    closure = _closure(grid_corpus, subsample=subsample, subsampler_prob=keep)
+    assert closure.uses_rng() is True
+
+    prob_window = _closure(grid_corpus, dynamic_window="prob")
+    assert prob_window.uses_rng() is True
+
+    # ... while every deterministic spelling reports the opposite
+    assert _closure(grid_corpus, subsample="deter").uses_rng() is False
+    assert _closure(grid_corpus, subsample="off").uses_rng() is False
+    assert _closure(grid_corpus, dynamic_window="decay").uses_rng() is False
+
+
+@pytest.mark.parametrize("window", (1, 2, 5, 10))
+@pytest.mark.parametrize("dynamic_window", DETERMINISTIC_DYNAMIC)
+def test_oversized_chunk_falls_back_to_the_identical_matrix(
+    grid_corpus, window, dynamic_window, monkeypatch
+):
+    """
+    A chunk over `MAX_VECTORIZED_EVENTS` streams through the Python loop
+    instead. That fallback is a memory decision, so it must be invisible in the
+    result -- otherwise a corpus would score differently depending on how it
+    happened to be chunked.
+    """
+    texts = read_pickle(grid_corpus.texts[0])
+    closure = _closure(grid_corpus, window=window, dynamic_window=dynamic_window)
+
+    fast = closure.count_texts(texts, random.Random(0))
+
+    monkeypatch.setattr(pair_counts, "MAX_VECTORIZED_EVENTS", 0)
+    assert closure.count_texts_vectorized(texts) is None
+    slow = closure.count_texts(texts, random.Random(0))
+
+    np.testing.assert_array_equal(
+        fast.toarray(),
+        slow.toarray(),
+        err_msg=(
+            f"the vectorized counter and the loop fallback disagree for "
+            f"window={window} dynamic_window={dynamic_window!r}; the fallback is "
+            f"a memory decision and must not change the matrix"
+        ),
+    )
+    assert fast.sum() > 0
+
+
+def test_vectorized_counter_handles_an_empty_chunk(grid_corpus):
+    closure = _closure(grid_corpus)
+    assert closure.count_texts_vectorized([]).nnz == 0
+    assert closure.count_texts_vectorized([[], []]).nnz == 0
+
+
+def test_vectorized_counter_handles_a_single_token_sentence(grid_corpus):
+    # no context exists, so the sentence contributes nothing -- but it must not
+    # break the ragged expansion around it
+    closure = _closure(grid_corpus, window=2)
+    texts = [[1], [2, 3], [4]]
+    fast = closure.count_texts_vectorized(texts)
+    counter = {}
+    for pair in pair_counts.iterate_tokens(
+        [2, 3],
+        2,
+        False,
+        True,
+        None,
+        True,
+        None,
+        False,
+        grid_corpus.vocab.size,
+        random.Random(0),
+    ):
+        counter[pair[0], pair[1]] = counter.get((pair[0], pair[1]), 0) + pair[2]
+    expected = pair_counts.to_count_matrix(counter, grid_corpus.vocab.size)
+    np.testing.assert_array_equal(fast.toarray(), expected.toarray())

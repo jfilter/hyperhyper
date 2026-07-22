@@ -7,6 +7,29 @@ Everything below is user-visible; several items change numeric results.
 
 ### Added
 
+-   **Pair counting is vectorized on the deterministic paths** — 3.6-4.4x on the
+    counting core, and **bit-identical** to the previous matrices. Configurations
+    that draw no random numbers (`dynamic_window` of `None`/`"deter"`/`"decay"`
+    with `subsample` of `None`/`"off"`/`"deter"`) now emit their (word, context,
+    weight) events for a whole chunk with numpy instead of a per-token Python
+    loop. On a 1.5M-token corpus, counting drops from 3.60s to 1.41s and a full
+    run from 10.04s to 8.94s — 12.41s to 8.94s (**28%**) against where this round
+    started.
+
+    Bit-identity is not an accident and rests on two things: the accumulation
+    stays in **float64** and narrows to float32 exactly once at the end (the
+    Python loop accumulated into Python floats, which *are* float64), and the
+    events are emitted in the loop's own order, because float addition is not
+    associative and the order of additions into a cell is part of the answer.
+    Decay weights come from the same scalar `decay()` via a lookup table rather
+    than `np.exp`, which may differ in the last bit.
+
+    The randomized modes (`"prob"`, `"dirty"`, `dynamic_window="prob"`) stay on
+    the Python loop: their per-token draw order is a contract, and they emit far
+    fewer pairs anyway. A chunk whose event arrays would not fit
+    (`MAX_VECTORIZED_EVENTS`) also falls back — a memory decision that is
+    invisible in the result, and tested to be.
+
 -   **Tokenization no longer starts a process pool that makes it slower.** The
     pool was gated on a fixed `PARALLEL_MIN_CHARS = 2_000_000`, but the
     measurements recorded next to that constant show the pool losing at *every*

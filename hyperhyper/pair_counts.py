@@ -73,6 +73,18 @@ def to_count_matrix(pair_counts, vocab_size):
 # way costs about one pool startup.
 POOL_STARTUP_SECONDS = 3.0
 
+# Ceiling on the events (word, context, weight triples) the vectorized counter
+# will materialize at once. It holds several arrays of this length -- positions,
+# distances, keys, the `np.unique` sort -- so the cap is really a memory budget,
+# roughly 300-400 MB at this value, *per worker*.
+#
+# A chunk over the cap falls back to the Python loop, which streams. That path
+# is slower but produces the identical matrix, so the fallback is invisible in
+# the result. `_auto_text_chunk_size` sizes chunks well under this for any
+# corpus it controls; the cap is there for an explicit `text_chunk_size` or an
+# input-file-shaped chunk that is far larger.
+MAX_VECTORIZED_EVENTS = 5_000_000
+
 # How much faster the pool has to look before it is worth the risk. At 1.0 we
 # would start a pool to save nothing.
 POOL_SPEEDUP_MARGIN = 1.3
@@ -323,11 +335,30 @@ class CountPairsClosure:
         rng = random.Random(f"{self.seed}-{Path(text_path).name}")
         return self.count_texts(texts, rng)
 
+    def uses_rng(self):
+        """
+        Whether counting this configuration draws random numbers.
+
+        `subsample="deter"` does not: it is a post-hoc scaling of the finished
+        matrix, so it never reaches `iterate_tokens`. Only `"prob"`/`"dirty"`
+        (which set `subsampler_prob`) and `dynamic_window="prob"` draw.
+        """
+        return self.subsampler_prob is not None or self.dynamic_window_prob
+
     def count_texts(self, texts, rng):
         """
         The counting itself, split out from `__call__` so that a caller can time
         a slice of a chunk without going near the filesystem or the RNG scheme.
+
+        Deterministic configurations take a vectorized path that produces a
+        bit-identical matrix several times faster; everything else keeps the
+        Python loop. See `count_texts_vectorized`.
         """
+        if not self.uses_rng():
+            vectorized = self.count_texts_vectorized(texts)
+            if vectorized is not None:
+                return vectorized
+
         counter = defaultdict(int)
         for t in texts:
             for pair in iterate_tokens(
@@ -344,6 +375,109 @@ class CountPairsClosure:
             ):
                 counter[pair[0], pair[1]] += pair[2]
         return to_count_matrix(counter, self.vocab_size)
+
+    def count_texts_vectorized(self, texts):
+        """
+        Count a whole chunk with numpy instead of the per-token Python loop.
+
+        Returns the same CSR matrix as the loop, **bit for bit**, or `None` when
+        the chunk is too large to hold its event arrays (the caller then falls
+        back to the loop, which is slower but streams).
+
+        Only for configurations that draw no random numbers. The randomized
+        modes are left on the loop deliberately: their draw order per token is a
+        contract (see `iterate_tokens`), they emit far fewer pairs so they are
+        already the cheap case, and duplicating that logic would be the kind of
+        second implementation that drifts.
+
+        How bit-identity is kept
+        ------------------------
+        Two things do it, and both are easy to lose:
+
+        * **Accumulate in float64, cast once at the end.** The loop accumulates
+          into `defaultdict(int)` with *Python* floats -- which are float64 --
+          and only `to_count_matrix` narrows to float32. Accumulating in float32
+          here would round at every addition instead of once at the end, and the
+          matrix would differ in the low bits.
+        * **Emit events in the loop's order.** float addition is not
+          associative, so the sequence of additions *to a given cell* is part of
+          the answer. The loop is centre-major with the context position
+          ascending, and the ragged expansion below reproduces exactly that;
+          `np.add.at` then applies the additions in index order.
+
+        The decay weights come from the same scalar `decay()` the loop uses, via
+        a lookup table over the `window + 1` possible distances -- not from
+        `np.exp`, which is free to differ in the last bit.
+        """
+        arrays = []
+        for tokens in texts:
+            sentence = np.asarray(tokens, dtype=np.int64)
+            if self.delete_oov:
+                # `vocab_size` is the <UNK> id; dropping it CLOSES the window
+                # over that slot, exactly as the loop's list comprehension does
+                sentence = sentence[sentence != self.vocab_size]
+            arrays.append(sentence)
+
+        lengths = np.array([len(a) for a in arrays], dtype=np.int64)
+        if not len(lengths) or lengths.sum() == 0:
+            return to_count_matrix({}, self.vocab_size)
+        flat = np.concatenate(arrays)
+
+        # per position: the bounds of the sentence it belongs to
+        sentence_start = np.repeat(np.cumsum(lengths) - lengths, lengths)
+        sentence_end = sentence_start + np.repeat(lengths, lengths)
+        centre = np.arange(len(flat), dtype=np.int64)
+
+        lo = np.maximum(sentence_start, centre - self.window)
+        hi = np.minimum(sentence_end, centre + self.window + 1)
+        span = hi - lo  # still includes the centre itself
+        n_events = int(span.sum())
+        if n_events > MAX_VECTORIZED_EVENTS:
+            return None
+
+        # ragged expansion: for each centre, its context positions ascending.
+        # This is the loop's `for j in range(start, end)`, all centres at once.
+        offsets = np.arange(n_events, dtype=np.int64) - np.repeat(
+            np.cumsum(span) - span, span
+        )
+        context = np.repeat(lo, span) + offsets
+        centre = np.repeat(centre, span)
+        keep = context != centre  # the loop's `if j != i`
+        context = context[keep]
+        centre = centre[keep]
+        # peak memory is what bounds `MAX_VECTORIZED_EVENTS`, and these three are
+        # each one event-length array that nothing below needs
+        del offsets, keep, lo, hi, span, sentence_start, sentence_end
+
+        if self.dynamic_window_deter:
+            distance = np.abs(centre - context).astype(np.float64)
+            weights = (self.window + 1 - distance) / self.window
+        elif self.dynamic_window_decay is not None:
+            table = np.array(
+                [
+                    decay(float(d), self.dynamic_window_decay)
+                    for d in range(self.window + 1)
+                ],
+                dtype=np.float64,
+            )
+            weights = table[np.abs(centre - context)]
+        else:
+            weights = np.ones(len(context), dtype=np.float64)
+
+        # one integer per (word, context) cell, so the accumulator is the size
+        # of the *observed* pairs rather than (V+1)^2
+        stride = self.vocab_size + 1
+        keys = flat[centre] * stride + flat[context]
+        unique, inverse = np.unique(keys, return_inverse=True)
+        totals = np.zeros(len(unique), dtype=np.float64)
+        np.add.at(totals, inverse.ravel(), weights)
+
+        matrix = coo_matrix(
+            (totals, (unique // stride, unique % stride)),
+            shape=(stride, stride),
+            dtype=np.float32,
+        )
+        return matrix.tocsr()
 
 
 def iterate_tokens(
