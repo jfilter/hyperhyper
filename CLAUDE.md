@@ -7,6 +7,12 @@ from the code and that have already been got wrong at least once.
 
 Everything runs under `uv`: `uv run pytest`, `uv run ruff check .`.
 
+**`uv.lock` records the project's own version.** After bumping `version` in
+`pyproject.toml`, run `uv lock` and commit the result. Locally this is invisible
+— `uv run` re-locks silently, so the tests pass and the change shows up only as
+an unstaged `uv.lock` — but CI syncs with `--locked` and every job fails. This
+has already broken a release tag once.
+
 ## 1. Determinism is a contract, not a nice property
 
 The single most important rule in this repository. Two runs with the same
