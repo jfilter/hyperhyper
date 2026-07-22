@@ -185,11 +185,23 @@ tests and respect the correctness gate around the counting code.
 
 ## Future Work / TODO
 
--   Vectorize pair counting. The counting in `hyperhyper/pair_counts.py` is still
-    pure Python (`iterate_tokens`), and rewriting it in numpy is the obvious next
-    optimisation. Measured on a 1.5M-token synthetic corpus (`window=2`,
-    `dynamic_window="deter"`, 10-core M1 Pro, Python 3.12), a full
-    corpus→count→PMI→SVD→evaluate run splits as:
+-   ~~Vectorize pair counting.~~ **Done** — every configuration now goes through
+    `CountPairsClosure.count_texts_vectorized`, and the Python loop
+    (`iterate_tokens`) survives only as the streaming fallback for chunks above
+    `MAX_VECTORIZED_EVENTS` and as the readable definition of what is being
+    computed. Measured speedups at `window=5` on 720k tokens: 2.6x for
+    `dynamic_window="prob"`, ~3x for `subsample="prob"`/`"dirty"`, 2.1x with both
+    randomized at once.
+
+    Every one of those is **bit-identical** to the pre-vectorization output,
+    randomized modes included: the fast path reproduces `random.Random`'s draw
+    stream instead of replacing it with a numpy generator, so results recorded
+    before the rewrite still reproduce exactly. `bench/bench_pair_counts.py`
+    measures it, `tests/test_pair_counts_equivalence.py` enforces it.
+
+    The measurement that motivated the work, kept for scale. On a 1.5M-token
+    synthetic corpus (`window=2`, `dynamic_window="deter"`, 10-core M1 Pro,
+    Python 3.12), a full corpus→count→PMI→SVD→evaluate run split as:
 
     | stage | time | share |
     |---|---:|---:|
@@ -199,10 +211,9 @@ tests and respect the correctness gate around the counting code.
     | PMI | 0.37s | 3.0% |
     | evaluation | 0.03s | 0.2% |
 
-    Inside counting, `cProfile` puts ~55% in `iterate_tokens` and ~32% in the
-    dictionary accumulation around it — i.e. roughly 85% is the pure-Python part
-    a vectorized rewrite would replace. So the ceiling here is real: several
-    percent of end-to-end per doubling of the loop's speed.
+    Inside counting, `cProfile` put ~55% in `iterate_tokens` and ~32% in the
+    dictionary accumulation around it — i.e. roughly 85% was the pure-Python part
+    the rewrite replaced. The ceiling was real, and so was the payoff.
 
     Note that the pool usually does *not* run at this size — `count_pairs`
     estimates the serial cost and skips the pool when its ~3s spawn startup would
@@ -213,10 +224,13 @@ tests and respect the correctness gate around the counting code.
     with the loop "roughly a quarter" of that. The measurement above does not
     support it and supersedes it.)
 
-    A correctness gate is in place for whoever does it:
-    `tests/test_pair_counts_equivalence.py` compares the live counter against a
-    frozen reference (`bench/reference.py`) and requires bit-identical output on
-    the deterministic configurations. See [CONTRIBUTING.md](./CONTRIBUTING.md).
+    The correctness gate stays: `tests/test_pair_counts_equivalence.py` compares
+    the live counter against a frozen reference (`bench/reference.py`) and
+    requires bit-identical output on every configuration that reference can
+    produce. See [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+-   Tokenization is now the largest single stage. It is the next thing worth
+    attacking, and unlike counting it has no correctness gate yet.
 
 ## `hyperhyper`?
 

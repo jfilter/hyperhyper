@@ -38,6 +38,20 @@ def decay(distance, rate):
     return e ** -(rate * distance)
 
 
+def _compact(flat, boundaries, keep):
+    """
+    Drop the tokens `keep` masks out, closing the sentences up around them.
+
+    The two places that remove a token -- `delete_oov` and `subsample="dirty"`
+    -- want exactly the same thing, and it is not "a shorter list": removing a
+    token CLOSES THE WINDOW over its slot, so its two neighbours become adjacent
+    and every distance behind it shifts by one. Re-deriving the boundaries from
+    the running count of survivors does that without unpacking the sentences.
+    """
+    kept_before = np.concatenate(([0], np.cumsum(keep)))
+    return flat[keep], kept_before[boundaries]
+
+
 def to_count_matrix(pair_counts, vocab_size):
     """
     transforms the counts into a sparse matrix
@@ -352,44 +366,26 @@ class CountPairsClosure:
         """
         return self.subsampler_prob is not None or self.dynamic_window_prob
 
-    def is_vectorizable(self):
-        """
-        Whether `count_texts_vectorized` can handle this configuration.
-
-        Two families qualify, and what they have in common is that the *draw
-        stream* can be reproduced exactly -- either because there is none, or
-        because it is one draw per token in token order, which a list
-        comprehension over the flattened chunk gives verbatim:
-
-        * everything deterministic (no draws at all);
-        * `dynamic_window="prob"` **without** subsampling: exactly one
-          `randint(1, window)` per token, in order.
-
-        `subsample="prob"`/`"dirty"` stay on the loop. Not because their stream
-        could not be reproduced -- it could, with more care, since the
-        subsampling draws for a sentence all precede its radius draws -- but
-        because they are already the *fastest* configurations by a wide margin:
-        they discard so many tokens that few pairs survive, so vectorizing them
-        would optimize the cheap case and buy a second code path to keep in
-        sync.
-        """
-        return not self.uses_rng() or (
-            self.dynamic_window_prob and self.subsampler_prob is None
-        )
-
     def count_texts(self, texts, rng):
         """
         The counting itself, split out from `__call__` so that a caller can time
         a slice of a chunk without going near the filesystem or the RNG scheme.
 
-        Deterministic configurations take a vectorized path that produces a
-        bit-identical matrix several times faster; everything else keeps the
-        Python loop. See `count_texts_vectorized`.
+        Every configuration goes through the vectorized counter, which produces
+        a bit-identical matrix several times faster; the Python loop below is
+        reached only when a chunk is too large to hold its event arrays. See
+        `count_texts_vectorized`.
         """
-        if self.is_vectorizable():
-            vectorized = self.count_texts_vectorized(texts, rng)
-            if vectorized is not None:
-                return vectorized
+        # The size check inside can bail out *after* drawing. The loop fallback
+        # must not inherit an advanced RNG: a chunk over the cap would then
+        # count differently from the same chunk under it, and the cap is a
+        # memory decision that must not reach the numbers.
+        state = rng.getstate() if (rng is not None and self.uses_rng()) else None
+        vectorized = self.count_texts_vectorized(texts, rng)
+        if vectorized is not None:
+            return vectorized
+        if state is not None:
+            rng.setstate(state)
 
         counter = defaultdict(int)
         for t in texts:
@@ -408,6 +404,104 @@ class CountPairsClosure:
                 counter[pair[0], pair[1]] += pair[2]
         return to_count_matrix(counter, self.vocab_size)
 
+    def _flatten(self, texts):
+        """
+        The chunk as one flat id array plus its sentence boundaries, with
+        out-of-vocabulary tokens already removed.
+        """
+        if isinstance(texts, IdChunk):
+            # already flat on disk (`utils.IdChunk`), so there is nothing to
+            # concatenate -- the npz chunk format was chosen for exactly this
+            flat = texts.flat.astype(np.int64, copy=False)
+            boundaries = np.asarray(texts.offsets, dtype=np.int64)
+            if self.delete_oov:
+                # `vocab_size` is the <UNK> id; dropping it CLOSES the window
+                # over that slot, exactly as the loop's comprehension does.
+                # Re-deriving the boundaries from the surviving-token counts
+                # keeps the sentences intact without unpacking them.
+                flat, boundaries = _compact(flat, boundaries, flat != self.vocab_size)
+            return flat, boundaries
+
+        arrays = []
+        for tokens in texts:
+            sentence = np.asarray(tokens, dtype=np.int64)
+            if self.delete_oov:
+                sentence = sentence[sentence != self.vocab_size]
+            arrays.append(sentence)
+        lengths = np.array([len(a) for a in arrays], dtype=np.int64)
+        flat = np.concatenate(arrays) if arrays else np.zeros(0, dtype=np.int64)
+        return flat, np.concatenate(([0], np.cumsum(lengths))).astype(np.int64)
+
+    def _keep_thresholds(self, flat):
+        """
+        Per position: the keep probability of the token there, NaN where the
+        word is not subsampled at all.
+
+        NaN rather than 1.0 because "not subsampled" and "kept with certainty"
+        are different in the one way that matters here: the loop's
+        `t not in subsampler_prob or rng.random() <= ...` short-circuits, so an
+        unsubsampled token consumes **no draw**. Getting that wrong shifts the
+        whole stream.
+        """
+        table = np.full(self.vocab_size + 1, np.nan)
+        for word, probability in self.subsampler_prob.items():
+            table[word] = probability
+        return table[flat]
+
+    def _subsample_draws(self, flat, boundaries, rng):
+        """
+        The subsampling keep mask, plus the radii that interleave with it.
+
+        Reproduces `iterate_tokens`' draw stream exactly, which is the whole
+        difficulty: within one sentence it draws one `random()` for every
+        subsample-eligible token in order, and only *then* -- once it knows
+        which tokens survived -- one `randint(1, window)` per survivor. The
+        sentences follow one another, so the two streams interleave, and the
+        radii cannot simply be drawn in a second pass over the whole chunk.
+
+        Returns `(keep, radius)`; `radius` is `None` unless the window is also
+        randomized, in which case it is one entry per *surviving* token.
+        """
+        thresholds = self._keep_thresholds(flat)
+        eligible = ~np.isnan(thresholds)
+
+        if not self.dynamic_window_prob:
+            # nothing interleaves, so the entire stream is these draws in token
+            # order and numpy can take the comparison in one go
+            n_eligible = int(eligible.sum())
+            draws = np.fromiter(
+                (rng.random() for _ in range(n_eligible)),
+                dtype=np.float64,
+                count=n_eligible,
+            )
+            keep = np.ones(len(flat), dtype=bool)
+            keep[eligible] = draws <= thresholds[eligible]
+            return keep, None
+
+        # Interleaved: sentence by sentence, keep decisions and then radii. This
+        # is a Python loop over tokens, and deliberately so -- per-sentence numpy
+        # calls would cost more than they save at ordinary sentence lengths. It
+        # is still worth doing: the draws are the cheap half of the loop this
+        # replaces, the emission it gates is the expensive one.
+        random_, randint, window = rng.random, rng.randint, self.window
+        eligible_at = eligible.tolist()
+        threshold_at = thresholds.tolist()
+        keep = [True] * len(flat)
+        radii = []
+        starts = boundaries[:-1].tolist()
+        ends = boundaries[1:].tolist()
+        for start, end in zip(starts, ends, strict=True):
+            for i in range(start, end):
+                if eligible_at[i] and random_() > threshold_at[i]:
+                    keep[i] = False
+            for i in range(start, end):
+                if keep[i]:
+                    radii.append(randint(1, window))
+        return (
+            np.array(keep, dtype=bool),
+            np.array(radii, dtype=np.int64),
+        )
+
     def count_texts_vectorized(self, texts, rng=None):
         """
         Count a whole chunk with numpy instead of the per-token Python loop.
@@ -416,16 +510,28 @@ class CountPairsClosure:
         the chunk is too large to hold its event arrays (the caller then falls
         back to the loop, which is slower but streams).
 
-        Handles the configurations `is_vectorizable` accepts: everything
-        deterministic, plus `dynamic_window="prob"` without subsampling.
+        Handles every configuration, randomized ones included, because it
+        reproduces their draw streams rather than replacing them. Nothing here
+        draws from a numpy generator: `random.Random` is asked for the same
+        numbers in the same order the loop asked for them, so the result is
+        bit-identical to the loop *and* to every number recorded before this
+        path existed. A numpy RNG would have been faster to draw with and would
+        have changed every randomized result at the same seed; the draws are not
+        the expensive part anyway (~0.08s per 200k tokens against ~0.9s for the
+        emission they gate).
 
-        The `"prob"` window keeps its exact draw stream rather than switching to
-        a numpy generator. `iterate_tokens` draws one `randint(1, window)` per
-        token in token order, and a comprehension over the flattened chunk draws
-        the same numbers in the same order -- so this stays bit-identical to the
-        loop *and* to every result recorded before it existed, which a numpy RNG
-        could never be. The draws themselves are not the expensive part
-        (~0.08s per 200k tokens against ~0.9s for the emission they gate).
+          * `dynamic_window="prob"` -- one `randint(1, window)` per token in
+            token order, which a comprehension over the flat chunk reproduces.
+          * `subsample="prob"`/`"dirty"` -- one `random()` per *eligible* token,
+            interleaved per sentence with the radii above; see
+            `_subsample_draws`, which is where all the care went.
+
+        The two subsampling variants differ only in what happens to a dropped
+        token, and that difference is one branch below: **dirty** removes it
+        from the chunk (so the window closes up and reaches one word further,
+        which is `_compact` again, exactly as for OOV), **clean** blanks it in
+        place (so it keeps bounding the window but can be neither centre nor
+        context).
 
         How bit-identity is kept
         ------------------------
@@ -446,48 +552,48 @@ class CountPairsClosure:
         a lookup table over the `window + 1` possible distances -- not from
         `np.exp`, which is free to differ in the last bit.
         """
-        if isinstance(texts, IdChunk):
-            # already flat on disk (`utils.IdChunk`), so there is nothing to
-            # concatenate -- the npz chunk format was chosen for exactly this
-            flat = texts.flat.astype(np.int64, copy=False)
-            boundaries = texts.offsets
-            if self.delete_oov:
-                # `vocab_size` is the <UNK> id; dropping it CLOSES the window
-                # over that slot, exactly as the loop's comprehension does.
-                # Re-deriving the boundaries from the surviving-token counts
-                # keeps the sentences intact without unpacking them.
-                keep_token = flat != self.vocab_size
-                kept_before = np.concatenate(([0], np.cumsum(keep_token)))
-                boundaries = kept_before[boundaries]
-                flat = flat[keep_token]
-            lengths = np.diff(boundaries)
-        else:
-            arrays = []
-            for tokens in texts:
-                sentence = np.asarray(tokens, dtype=np.int64)
-                if self.delete_oov:
-                    sentence = sentence[sentence != self.vocab_size]
-                arrays.append(sentence)
-            lengths = np.array([len(a) for a in arrays], dtype=np.int64)
-            flat = np.concatenate(arrays) if arrays else np.zeros(0, dtype=np.int64)
+        flat, boundaries = self._flatten(texts)
 
+        # positions that keep their slot but may not take part in any pair
+        blanked = None
+        # per-centre radii, when the subsampling draws produced them
+        radius = None
+        if self.subsampler_prob is not None:
+            keep_token, radius = self._subsample_draws(flat, boundaries, rng)
+            if self.subsampler_dirty:
+                flat, boundaries = _compact(flat, boundaries, keep_token)
+            else:
+                blanked = ~keep_token
+
+        lengths = np.diff(boundaries)
         if not len(lengths) or lengths.sum() == 0:
             return to_count_matrix({}, self.vocab_size)
 
         # per position: the bounds of the sentence it belongs to
-        sentence_start = np.repeat(np.cumsum(lengths) - lengths, lengths)
-        sentence_end = sentence_start + np.repeat(lengths, lengths)
+        sentence_start = np.repeat(boundaries[:-1], lengths)
+        sentence_end = np.repeat(boundaries[1:], lengths)
         centre = np.arange(len(flat), dtype=np.int64)
+        if blanked is not None:
+            # a blanked token is never a centre -- the loop's `if tok is not
+            # None` -- but its slot still bounds the windows around it, which is
+            # why the sentence bounds above were built over every position
+            centre = centre[~blanked]
+            sentence_start = sentence_start[centre]
+            sentence_end = sentence_end[centre]
+            if not len(centre):
+                return to_count_matrix({}, self.vocab_size)
 
-        if self.dynamic_window_prob:
-            # one draw per token, in token order -- exactly what the loop does
-            radius = np.fromiter(
-                (rng.randint(1, self.window) for _ in range(len(flat))),
-                dtype=np.int64,
-                count=len(flat),
-            )
-        else:
-            radius = self.window
+        if radius is None:
+            if self.dynamic_window_prob:
+                # one draw per token, in token order -- exactly what the loop
+                # does when no subsampling draws interleave with it
+                radius = np.fromiter(
+                    (rng.randint(1, self.window) for _ in range(len(centre))),
+                    dtype=np.int64,
+                    count=len(centre),
+                )
+            else:
+                radius = self.window
 
         lo = np.maximum(sentence_start, centre - radius)
         hi = np.minimum(sentence_end, centre + radius + 1)
@@ -504,6 +610,8 @@ class CountPairsClosure:
         context = np.repeat(lo, span) + offsets
         centre = np.repeat(centre, span)
         keep = context != centre  # the loop's `if j != i`
+        if blanked is not None:
+            keep &= ~blanked[context]  # ... and its `and tokens[j] is not None`
         context = context[keep]
         centre = centre[keep]
         # peak memory is what bounds `MAX_VECTORIZED_EVENTS`, and these three are

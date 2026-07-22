@@ -32,39 +32,53 @@ rounding differently, a reordered accumulation) that this gate exists to catch.
 If a vectorized rewrite cannot hit bit-identity here, that is a finding to
 discuss, not a tolerance to widen.
 
-`dynamic_window="prob"` without subsampling -- ALSO BIT-IDENTICAL
-------------------------------------------------------------------
-This section used to say bit-identity was "not achievable" for every randomized
-configuration. That was wrong, and the reasoning behind it is worth keeping
-because it is a plausible trap: it assumed a vectorization would draw its
-numbers from a *numpy* generator up front, which would indeed give different
-numbers at the same seed no matter how correct the rewrite was.
+The randomized configurations -- ALSO BIT-IDENTICAL
+----------------------------------------------------
+    dynamic_window="prob",  subsample="prob",  and both at once
 
-It does not have to. `iterate_tokens` draws exactly one `randint(1, window)` per
-token in token order, and a comprehension over the flattened chunk draws the
-same numbers in the same order -- so the vectorized counter reproduces the
-stream verbatim and stays bit-identical to the frozen reference, and therefore
-to every number recorded before it existed. Held to `assert_array_equal` below,
-across all four windows and both seeds.
+This section has now been wrong twice, in the same direction, and both errors
+are worth keeping because both are plausible traps.
 
-Randomized subsampling -- STATISTICAL EQUIVALENCE ONLY
--------------------------------------------------------
-    subsample in ("prob", "dirty")
+It first said bit-identity was "not achievable" for any randomized
+configuration. That assumed a vectorization would draw from a *numpy* generator
+up front, which would indeed give different numbers at the same seed no matter
+how correct the rewrite was. It does not have to: `iterate_tokens` draws one
+`randint(1, window)` per token in token order, and a comprehension over the
+flattened chunk draws the same numbers in the same order.
 
-These stay on the Python loop, so nothing about their output has changed. The
-statistical machinery below remains the standard they are held to, because a
-future vectorization of *them* would face the interleaving the paragraph above
-sidesteps: the subsampling draws for a sentence precede its window draws, and
-under the clean variant a dropped token consumes a subsample draw but no window
-draw.
+It then said the same thing about subsampling, on the better-sounding grounds
+that the two draw streams *interleave* -- within a sentence the subsample draws
+come first, and only the survivors draw a radius, so neither stream can be drawn
+in one pass over the chunk. That is all true and it is still not an obstacle:
+the interleaving is a known, reproducible pattern, and `_subsample_draws`
+walks it sentence by sentence. The draws stay in Python; only the *emission*
+they gate is vectorized, which is where the time was.
 
-What must survive is the *distribution*. So these are checked by:
+So every mode the frozen reference can produce is held to
+`assert_array_equal` -- 4 windows x 4 dynamic_window modes x 3 subsample modes
+x 2 seeds, randomized cells included.
+
+`subsample="dirty"` -- STATISTICAL EQUIVALENCE, for a different reason
+----------------------------------------------------------------------
+Not because it is randomized, but because it postdates the frozen snapshot,
+which raises on the mode outright and so cannot produce a matrix to compare
+against. It is checked two ways instead: statistically against the independent
+naive implementation further down, and bit-exactly against this package's *own*
+Python loop (`test_oversized_chunk_falls_back_to_the_identical_matrix`), which
+is what actually guards the vectorization of it.
+
+What must survive the statistical comparison is the *distribution*. So it is
+checked by:
 
   1. running both implementations over many seeds,
   2. comparing the mean matrix and the mean total count,
   3. with a tolerance calibrated from the Monte-Carlo noise measured in the
      reference's own output, not from a magic constant (see
      `_assert_means_agree` and `_assert_totals_agree` for the arithmetic).
+
+The clean variant used to be checked this way too. It no longer is: bit-identity
+strictly implies equality of every moment, so keeping the weaker test alongside
+the stronger one would only cost `N_STAT_SEEDS` runs per cell to prove less.
 
 WHAT THE STATISTICAL TESTS DO NOT PROVE
 ---------------------------------------
@@ -86,11 +100,11 @@ COVERAGE
     subsample         None, "deter", "prob"
     seed              1312, 23
 
-The deterministic half of that product (4 x 3 x 2 x 2 = 48 cells) is swept
-exhaustively -- each cell is one `count_pairs` call, so it is cheap. The
-randomized half costs `N_STAT_SEEDS` calls per cell, so its window axis is
-bracketed rather than swept; see `STAT_WINDOWS` for why that is defensible.
-`delete_oov` is varied in its own case at the end of this file rather than
+The whole product (4 x 4 x 3 x 2 = 96 cells) is now swept exhaustively, because
+every cell is one `count_pairs` call held to exact equality rather than
+`N_STAT_SEEDS` calls held to a hypothesis test. `subsample="dirty"` is the only
+mode outside it, and it keeps the bracketed window axis (`STAT_WINDOWS`) that
+the randomized cells used to need. `delete_oov` is varied in its own case at the end of this file rather than
 across the grid. It was previously left at True throughout, on the stated
 grounds that it is "a plain filter applied before any of the knobs" -- that was
 wrong, and is corrected here: removing an out-of-vocabulary token CLOSES THE
@@ -101,7 +115,7 @@ list. It also needs its own corpus (`oov_corpus`): the grid corpus has no
 out-of-vocabulary token at all, so testing this on it would compare a matrix to
 itself.
 
-They are backstopped by two things that ARE exact even on the random paths:
+The dirty variant is backstopped by two things that ARE exact:
 `test_random_config_is_reproducible_for_a_fixed_seed` (same seed twice must
 give the identical matrix -- a property the rewrite must keep) and
 `test_keep_probability_is_sqrt_threshold_over_count` plus
@@ -141,6 +155,11 @@ SEEDS = (1312, 23)
 DETERMINISTIC_DYNAMIC = (None, "deter", "decay")
 DETERMINISTIC_SUBSAMPLE = (None, "deter")
 
+# Every subsample mode the frozen reference can produce, and therefore every
+# mode that can be held to exact equality against it. "dirty" is missing because
+# the snapshot predates it and raises on it, not because it is randomized.
+EXACT_SUBSAMPLE = (None, "deter", "prob")
+
 # Chosen so that subsampling actually bites without annihilating the corpus.
 # The grid corpus below has ~10k tokens, so the threshold is ~60; against the
 # Zipfian counts that leaves the tail untouched and pulls the head down to a
@@ -158,40 +177,30 @@ SUBSAMPLE_FACTOR = 6e-3
 N_STAT_SEEDS = 10
 N_STAT_SEEDS_FAST = 5
 
-DETERMINISTIC_GRID = [
+EXACT_GRID = [
     (window, dynamic_window, subsample, seed)
     for window in WINDOWS
-    for dynamic_window in DETERMINISTIC_DYNAMIC
-    for subsample in DETERMINISTIC_SUBSAMPLE
+    for dynamic_window in DYNAMIC_WINDOWS
+    for subsample in EXACT_SUBSAMPLE
     for seed in SEEDS
 ]
 
-# The randomized cells cost N_STAT_SEEDS calls each instead of one, so the
-# window axis is bracketed (smallest and largest) rather than swept. That is
-# defensible because the window barely interacts with the randomness: for
-# `subsample="prob"` the keep decision does not involve the window at all, and
-# for `dynamic_window="prob"` the window only sets the upper bound of
-# `randint(1, window)` -- 2 and 10 exercise a narrow and a wide draw range.
-# The window axis is still swept exhaustively where it is cheap, in
-# DETERMINISTIC_GRID above.
+# `subsample="dirty"` is compared statistically (it has no frozen reference), so
+# its cells cost N_STAT_SEEDS calls each and its window axis is bracketed
+# (smallest and largest) rather than swept. That is defensible because the
+# window barely interacts with the randomness: the keep decision does not
+# involve the window at all. The window axis is swept exhaustively where it is
+# exact, in EXACT_GRID above.
 STAT_WINDOWS = (2, 10)
-
-RANDOM_GRID = [
-    (window, dynamic_window, subsample)
-    for window in STAT_WINDOWS
-    for dynamic_window in DYNAMIC_WINDOWS
-    for subsample in SUBSAMPLES
-    if dynamic_window == "prob" or subsample == "prob"
-]
 
 # A representative slice kept in the fast suite so that a broken harness is
 # noticed without waiting for the full grid.
-FAST_DETERMINISTIC = [
+FAST_EXACT = [
     (2, "deter", "deter", 1312),  # the shipped defaults
     (5, "decay", None, 1312),  # irrational counts, nothing to hide rounding
     (1, None, "deter", 23),  # degenerate window
+    (5, "prob", "prob", 1312),  # both knobs randomized at once, still exact
 ]
-FAST_RANDOM = [(5, "prob", "prob")]  # both knobs randomized at once
 
 
 # --------------------------------------------------------------------------
@@ -278,7 +287,7 @@ def _both(corpus, **kwargs):
 
 
 # --------------------------------------------------------------------------
-# deterministic configurations: bit-identical
+# every configuration the reference can produce: bit-identical
 # --------------------------------------------------------------------------
 
 
@@ -302,33 +311,28 @@ def _assert_bit_identical(
             f"live count_pairs diverged from the frozen f68cc74 reference for "
             f"window={window} dynamic_window={dynamic_window!r} "
             f"subsample={subsample!r} delete_oov={delete_oov} seed={seed}. "
-            f"This configuration draws no "
-            f"random numbers, so the matrices must match bit for bit."
+            f"Whether or not this configuration draws random numbers, it draws "
+            f"them in the reference's order, so the matrices must match bit for "
+            f"bit."
         ),
     )
     # a rewrite that returns an all-zero matrix would pass the comparison above
     assert ref.sum() > 0, "the reference produced nothing -- the corpus is degenerate"
 
 
-@pytest.mark.parametrize(
-    ("window", "dynamic_window", "subsample", "seed"), FAST_DETERMINISTIC
-)
-def test_deterministic_config_is_bit_identical_fast(
+@pytest.mark.parametrize(("window", "dynamic_window", "subsample", "seed"), FAST_EXACT)
+def test_config_is_bit_identical_fast(
     grid_corpus, window, dynamic_window, subsample, seed
 ):
     _assert_bit_identical(grid_corpus, window, dynamic_window, subsample, seed)
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(
-    ("window", "dynamic_window", "subsample", "seed"), DETERMINISTIC_GRID
-)
-def test_deterministic_config_is_bit_identical(
-    grid_corpus, window, dynamic_window, subsample, seed
-):
+@pytest.mark.parametrize(("window", "dynamic_window", "subsample", "seed"), EXACT_GRID)
+def test_config_is_bit_identical(grid_corpus, window, dynamic_window, subsample, seed):
     """
-    The full grid: 4 windows x 3 deterministic dynamic_window modes x 2
-    deterministic subsample modes x 2 seeds.
+    The full grid: 4 windows x 4 dynamic_window modes x 3 subsample modes x 2
+    seeds, randomized cells included.
     """
     _assert_bit_identical(grid_corpus, window, dynamic_window, subsample, seed)
 
@@ -369,15 +373,6 @@ def test_deterministic_config_ignores_the_seed(grid_corpus, dynamic_window, subs
 # 1e-3, while still catching any relative bias larger than roughly 4/sqrt(N) of
 # a per-seed standard deviation.
 SIGMA_TOLERANCE = 4.0
-
-
-def _sample(corpus, seeds, **kwargs):
-    live, ref = [], []
-    for seed in seeds:
-        a, b = _both(corpus, seed=seed, **kwargs)
-        live.append(a)
-        ref.append(b)
-    return np.array(live, dtype=np.float64), np.array(ref, dtype=np.float64)
 
 
 def _assert_totals_agree(live, ref, label):
@@ -441,53 +436,6 @@ def _assert_means_agree(live, ref, label):
         f"reference itself over {len(ref)} seeds. Under the null this ratio "
         f"should be around 0.71; got {signal / noise:.3f}."
     )
-
-
-@pytest.mark.parametrize(("window", "dynamic_window", "subsample"), FAST_RANDOM)
-def test_random_config_is_statistically_equivalent_fast(
-    grid_corpus, window, dynamic_window, subsample
-):
-    """
-    Same comparison as the full grid below, at a seed count the fast suite can
-    afford. Fewer seeds only costs resolution -- the tolerance is derived from
-    the observed spread, so a smaller sample widens it rather than making the
-    test flaky.
-    """
-    _run_statistical_comparison(
-        grid_corpus, window, dynamic_window, subsample, N_STAT_SEEDS_FAST
-    )
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize(("window", "dynamic_window", "subsample"), RANDOM_GRID)
-def test_random_config_is_statistically_equivalent(
-    grid_corpus, window, dynamic_window, subsample
-):
-    """
-    Every grid cell where at least one knob is "prob".
-
-    Bit-identity is impossible here (module docstring); equality of the first
-    moment at the resolution of `N_STAT_SEEDS` seeds is what is demanded
-    instead.
-    """
-    _run_statistical_comparison(
-        grid_corpus, window, dynamic_window, subsample, N_STAT_SEEDS
-    )
-
-
-def _run_statistical_comparison(corpus, window, dynamic_window, subsample, n_seeds):
-    label = f"window={window} dynamic_window={dynamic_window!r} subsample={subsample!r}"
-    seeds = range(1000, 1000 + n_seeds)
-    live, ref = _sample(
-        corpus,
-        seeds,
-        window=window,
-        dynamic_window=dynamic_window,
-        subsample=subsample,
-        subsample_factor=SUBSAMPLE_FACTOR,
-    )
-    _assert_totals_agree(live, ref, label)
-    _assert_means_agree(live, ref, label)
 
 
 # --------------------------------------------------------------------------
@@ -830,10 +778,11 @@ def test_vectorized_path_is_actually_taken(grid_corpus):
 
 
 @pytest.mark.parametrize("subsample", ["prob", "dirty"])
-def test_randomized_configs_stay_on_the_loop(grid_corpus, subsample):
+def test_uses_rng_reports_which_modes_draw(grid_corpus, subsample):
     """
-    The randomized modes must not be routed through the vectorized path: their
-    per-token draw order is a contract, and the fast path draws nothing at all.
+    `uses_rng` decides whether `count_texts` has to snapshot the RNG before
+    trying the fast path, so a mode misreported as deterministic would corrupt
+    the oversized-chunk fallback rather than fail outright.
     """
     keep = pair_counts.subsample_keep_probabilities(grid_corpus.counts, 1.0)
     closure = _closure(grid_corpus, subsample=subsample, subsampler_prob=keep)
@@ -848,24 +797,54 @@ def test_randomized_configs_stay_on_the_loop(grid_corpus, subsample):
     assert _closure(grid_corpus, dynamic_window="decay").uses_rng() is False
 
 
+# Every (dynamic_window, subsample) pair, including the two the frozen reference
+# cannot produce. This is the only exact check `subsample="dirty"` gets, so it
+# carries real weight rather than being a rounding-out of the grid.
+FALLBACK_MODES = [
+    (dynamic_window, subsample)
+    for dynamic_window in DYNAMIC_WINDOWS
+    for subsample in (None, "prob", "dirty")
+]
+
+
 @pytest.mark.parametrize("window", (1, 2, 5, 10))
-@pytest.mark.parametrize("dynamic_window", DETERMINISTIC_DYNAMIC)
+@pytest.mark.parametrize(("dynamic_window", "subsample"), FALLBACK_MODES)
 def test_oversized_chunk_falls_back_to_the_identical_matrix(
-    grid_corpus, window, dynamic_window, monkeypatch
+    grid_corpus, window, dynamic_window, subsample, monkeypatch
 ):
     """
     A chunk over `MAX_VECTORIZED_EVENTS` streams through the Python loop
     instead. That fallback is a memory decision, so it must be invisible in the
     result -- otherwise a corpus would score differently depending on how it
     happened to be chunked.
+
+    On the randomized modes this is also the tightest available check of the
+    vectorized counter itself: both sides are handed a *fresh* `random.Random`
+    at the same seed, so equality means the fast path drew the same numbers, in
+    the same order, and spent them on the same tokens as the loop. It is what
+    catches an off-by-one in the interleaving that `_subsample_draws` walks --
+    and, separately, it is why `count_texts` restores the RNG state before
+    falling back: without that, the loop would resume from an already-advanced
+    generator and this test would fail on every randomized cell.
     """
+    keep = (
+        pair_counts.subsample_keep_probabilities(grid_corpus.counts, 60.0)
+        if subsample
+        else None
+    )
     texts = load_id_chunk(grid_corpus.texts[0])
-    closure = _closure(grid_corpus, window=window, dynamic_window=dynamic_window)
+    closure = _closure(
+        grid_corpus,
+        window=window,
+        dynamic_window=dynamic_window,
+        subsample=subsample,
+        subsampler_prob=keep,
+    )
 
     fast = closure.count_texts(texts, random.Random(0))
 
     monkeypatch.setattr(pair_counts, "MAX_VECTORIZED_EVENTS", 0)
-    assert closure.count_texts_vectorized(texts) is None
+    assert closure.count_texts_vectorized(texts, random.Random(0)) is None
     slow = closure.count_texts(texts, random.Random(0))
 
     np.testing.assert_array_equal(
@@ -873,8 +852,9 @@ def test_oversized_chunk_falls_back_to_the_identical_matrix(
         slow.toarray(),
         err_msg=(
             f"the vectorized counter and the loop fallback disagree for "
-            f"window={window} dynamic_window={dynamic_window!r}; the fallback is "
-            f"a memory decision and must not change the matrix"
+            f"window={window} dynamic_window={dynamic_window!r} "
+            f"subsample={subsample!r}; the fallback is a memory decision and "
+            f"must not change the matrix"
         ),
     )
     assert fast.sum() > 0
@@ -943,21 +923,28 @@ def test_prob_window_without_subsampling_is_bit_identical(grid_corpus, window, s
     assert ref.sum() > 0
 
 
-def test_prob_window_is_vectorized_but_subsampling_is_not(grid_corpus):
-    keep = pair_counts.subsample_keep_probabilities(grid_corpus.counts, 1.0)
-    assert _closure(grid_corpus, dynamic_window="prob").is_vectorizable() is True
-    # ... and adding subsampling takes it back off the fast path, because the
-    # two draw streams interleave
-    assert (
-        _closure(
-            grid_corpus, dynamic_window="prob", subsample="prob", subsampler_prob=keep
-        ).is_vectorizable()
-        is False
+@pytest.mark.parametrize("subsample", [None, "prob", "dirty"])
+@pytest.mark.parametrize("dynamic_window", DYNAMIC_WINDOWS)
+def test_every_mode_takes_the_vectorized_path(grid_corpus, dynamic_window, subsample):
+    """
+    The randomized modes used to be excluded from the fast path by an
+    `is_vectorizable` predicate. They no longer are, and nothing else in this
+    file would notice if they quietly fell back to the loop again -- the
+    matrices would stay correct and only the speed would be gone.
+    """
+    keep = (
+        pair_counts.subsample_keep_probabilities(grid_corpus.counts, 60.0)
+        if subsample
+        else None
     )
-    assert (
-        _closure(grid_corpus, subsample="dirty", subsampler_prob=keep).is_vectorizable()
-        is False
+    closure = _closure(
+        grid_corpus,
+        dynamic_window=dynamic_window,
+        subsample=subsample,
+        subsampler_prob=keep,
     )
+    texts = load_id_chunk(grid_corpus.texts[0])
+    assert closure.count_texts_vectorized(texts, random.Random(0)) is not None
 
 
 # --------------------------------------------------------------------------

@@ -57,9 +57,12 @@ Read the diff in this order:
      cheap smoke test; the real gate is
      `pytest tests/test_pair_counts_equivalence.py -m slow`, which compares
      whole matrices against the frozen snapshot in `bench/reference.py`.
-  2. The two `prob` rows will differ in `checksum` even when the rewrite is
-     correct -- vectorizing the RNG changes the draw order. Only their timings
-     are comparable.
+  2. So must the `prob` rows'. This note used to say the opposite -- that they
+     "will differ even when the rewrite is correct, because vectorizing the RNG
+     changes the draw order". Nothing vectorized the RNG in the end: the
+     randomized paths reproduce their draw streams from `random.Random` and only
+     vectorize the emission, so every row in this table is bit-reproducible and
+     a moved checksum is a bug on any of them.
   3. `best` (the fastest of `repeats` runs) and `tok/s` are the numbers to
      quote. `mean` is there to show how noisy the machine is; if `mean - best`
      is a large fraction of `best`, close things and run it again.
@@ -106,6 +109,11 @@ CONFIGS = [
     ("w10 dyn=deter", {"window": 10, "dynamic_window": "deter", "subsample": None}),
     ("w5 dyn=prob", {"window": 5, "dynamic_window": "prob", "subsample": None}),
     ("w5 sub=prob", {"window": 5, "dynamic_window": None, "subsample": "prob"}),
+    ("w5 sub=dirty", {"window": 5, "dynamic_window": None, "subsample": "dirty"}),
+    # both knobs randomized: the case whose two draw streams interleave, and the
+    # one where the vectorized counter has the least room to win, because it has
+    # to walk that interleaving in Python
+    ("w5 dyn+sub=prob", {"window": 5, "dynamic_window": "prob", "subsample": "prob"}),
 ]
 
 # large enough that subsampling actually drops tokens instead of erasing the
@@ -261,8 +269,8 @@ def main(argv):
             f"best {min(e2e):.3f}s over {len(corpus.texts)} chunks"
         )
         print()
-        print("checksum/sum/nnz must not move on the deterministic rows; the two")
-        print("'prob' rows are expected to move once the RNG is vectorized.")
+        print("checksum/sum/nnz must not move on ANY row: the randomized modes")
+        print("reproduce their draw streams rather than replacing them.")
         print()
 
 

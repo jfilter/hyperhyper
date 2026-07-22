@@ -44,10 +44,47 @@
     holds this configuration to `assert_array_equal` across every window and
     seed, and the docstring records why the old claim was wrong.
 
-    `subsample="prob"`/`"dirty"` deliberately stay on the Python loop: they
-    discard so many tokens that they are already the *fastest* configurations
-    (0.12-0.13s against 0.31s for the vectorized default), so vectorizing them
-    would optimize the cheap case and buy a second code path to keep in sync.
+-   **`subsample="prob"`/`"dirty"` are vectorized too, and are also
+    bit-identical.** ~3x faster (1.19s to 0.39s for clean, 1.39s to 0.42s for
+    dirty, on 720k tokens at `window=5`); with a randomized window on top of the
+    subsampling, 2.1x. Every configuration now takes the vectorized path.
+
+    This entry supersedes the paragraph above, which said these two "deliberately
+    stay on the Python loop" because they were already the fastest configurations
+    and vectorizing them "would optimize the cheap case". That was measured, and
+    it was wrong in the way benchmarks usually are: they were fastest *per
+    surviving pair* and the slowest *per call*, which is the number a user waits
+    on. At `window=5` they were the two slowest rows in the table.
+
+    The real obstacle was the one the equivalence gate named: the two draw
+    streams **interleave**. Within a sentence, `iterate_tokens` draws one
+    `random()` per subsample-eligible token, and only then, knowing which tokens
+    survived, one `randint(1, window)` per survivor — so neither stream can be
+    drawn in a single pass over the chunk. `_subsample_draws` walks that
+    interleaving sentence by sentence, in Python, and leaves only the *emission*
+    to numpy. That is the right split: the draws were the cheap half all along.
+
+    Because the streams are reproduced rather than replaced, `subsample="prob"`
+    is now held to `assert_array_equal` against the frozen f68cc74 reference —
+    across all 4 windows, all 4 `dynamic_window` modes and both seeds, both knobs
+    randomized at once included. The equivalence grid grew from 48 exact cells to
+    96, and the statistical comparison for `"prob"` was **removed**: bit-identity
+    implies equality of every moment, so keeping it would have cost 10 runs per
+    cell to prove less. `"dirty"` keeps its statistical check (the frozen
+    reference predates the mode and cannot produce it) and gains an exact one
+    against this package's own loop.
+
+### Fixed
+
+-   **An oversized chunk no longer changes randomized results.** A chunk above
+    `MAX_VECTORIZED_EVENTS` falls back to the Python loop — but the vectorized
+    path had already drawn from the RNG before discovering it was too large, so
+    the loop resumed from an advanced generator. A corpus would have counted
+    differently depending only on how it happened to be chunked, which is exactly
+    what that memory cap must never do. `count_texts` now snapshots and restores
+    the RNG state around the attempt. Present since `dynamic_window="prob"` was
+    vectorized (unreleased), and found by extending the fallback test to the
+    randomized modes.
 
 -   **`bench/bench_svd.py` — which SVD backend to use, measured.** The package
     offered three (`scipy` exact, `gensim` and `scikit` randomized) and never said
