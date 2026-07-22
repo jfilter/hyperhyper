@@ -8,6 +8,7 @@ So we have to caculate the metrics ourselves.
 import csv
 import logging
 import math
+from collections import Counter
 from importlib.resources import files
 from pathlib import Path
 
@@ -29,6 +30,25 @@ _TSV_HEADERS = {
     3: ("word1", "word2", "score"),
     4: ("a", "a_prime", "b", "b_prime"),
 }
+
+# The domain proxy tasks (ADR 0001, P4) are *variable width*: a synonym
+# multiple-choice row carries as many distractors as its file declares. Their
+# width therefore cannot be passed in the way `ws`/`analogy` pass a fixed
+# `keep_len` -- it is read off the file's own header, which is exactly the
+# capability the TSV migration bought (ADR 0002 anticipated this: "fits the
+# richer rows the P4 domain-proxy datasets will need").
+#
+# Keying the header by column count, as the two original kinds do, also stops
+# working here: a synonym row with one distractor would be three columns and
+# collide with `ws`. So these kinds are keyed by *name* instead, and a caller
+# reading one must say which kind it wants.
+_SYNONYM_MIN_DISTRACTORS = 2
+_CATEGORY_HEADER = ("word", "category")
+
+
+def _synonym_header(n_columns):
+    """The required synonym-MC header for a file of `n_columns` columns."""
+    return ("target", "answer", *(f"distractor{i}" for i in range(1, n_columns - 1)))
 
 
 class MalformedDatasetError(ValueError):
@@ -239,9 +259,9 @@ def aggregate(full_results, kind):
     return {"micro": micro_avg, "macro": macro_avg, "results": full_results}
 
 
-def setup_test_tokens(p, keep_len):
+def setup_test_tokens(p, keep_len=None, *, kind=None):
     """
-    Read a similarity/analogy dataset file into its `keep_len` word/score columns.
+    Read a dataset file into its word/score columns.
 
     The on-disk format is chosen by the file's extension, never by sniffing its
     delimiter (ADR 0002):
@@ -259,19 +279,67 @@ def setup_test_tokens(p, keep_len):
       `logger.warning` (file, line, content) and skipped so one bad row does not
       abort the evaluation.
 
+    The fixed-width kinds are read by passing `keep_len` (3 or 4), which is how
+    every existing caller uses this. The variable-width P4 kinds are read by
+    passing ``kind="synonym"`` or ``kind="category"`` instead, and their width
+    comes from the file's own header -- a synonym file declares how many
+    distractors it carries. Legacy ``.txt`` cannot express those kinds (it has no
+    header to declare a width), so they are TSV-only.
+
     Returns the kept columns as `zip(*rows, strict=True)` for both formats; the
     per-field/per-pair scoring downstream is unchanged.
     """
+    if kind is not None and keep_len is not None:
+        raise ValueError("pass either keep_len or kind, not both")
+    if kind is None and keep_len is None:
+        raise ValueError("pass keep_len (fixed-width kinds) or kind")
     if p.name.endswith(".tsv"):
-        return _read_tsv(p, keep_len)
+        return _read_tsv(p, keep_len, kind)
+    if kind is not None:
+        raise MalformedDatasetError(
+            f"{p.name}: the {kind!r} task is TSV-only -- the legacy whitespace "
+            f"format has no header row to declare the row width"
+        )
     return _read_txt_whitespace(p, keep_len)
 
 
-def _read_tsv(p, keep_len):
-    """Strict TSV parse (see `setup_test_tokens`); raises on any malformed input."""
-    expected = _TSV_HEADERS[keep_len]
-    score_idx = expected.index("score") if "score" in expected else None
+def _resolve_header(p, header, header_idx, keep_len, kind):
+    """
+    Validate the file's header row and return `(expected, keep_len, score_idx)`.
 
+    For the fixed-width kinds the caller states the width and the header must
+    match it exactly. For the variable-width P4 kinds it is the other way round:
+    the header *is* the declaration, so it determines the width every data row
+    must then have.
+    """
+    if kind is None:
+        expected = _TSV_HEADERS[keep_len]
+    elif kind == "category":
+        expected, keep_len = _CATEGORY_HEADER, len(_CATEGORY_HEADER)
+    elif kind == "synonym":
+        keep_len = len(header)
+        if keep_len < _SYNONYM_MIN_DISTRACTORS + 2:
+            raise MalformedDatasetError(
+                f"{p.name}:{header_idx + 1}: a synonym multiple-choice file needs "
+                f"a target, an answer and at least {_SYNONYM_MIN_DISTRACTORS} "
+                f"distractors ({_SYNONYM_MIN_DISTRACTORS + 2} columns); "
+                f"got {keep_len}: {header!r}"
+            )
+        expected = _synonym_header(keep_len)
+    else:
+        raise ValueError(f"unknown kind {kind!r}")
+
+    if tuple(header) != expected:
+        raise MalformedDatasetError(
+            f"{p.name}:{header_idx + 1}: header must be {list(expected)!r}, "
+            f"got {header!r}"
+        )
+    score_idx = expected.index("score") if "score" in expected else None
+    return expected, keep_len, score_idx
+
+
+def _read_tsv(p, keep_len, kind=None):
+    """Strict TSV parse (see `setup_test_tokens`); raises on any malformed input."""
     lines = p.read_text(encoding="utf-8").split("\n")
 
     # the header is the first line that is neither blank nor a `#`-preamble line;
@@ -285,16 +353,13 @@ def _read_tsv(p, keep_len):
         break
     if header_idx is None:
         raise MalformedDatasetError(
-            f"{p.name}: no header row found; expected {list(expected)!r} "
-            f"after the optional '# key: value' preamble"
+            f"{p.name}: no header row found after the optional '# key: value' preamble"
         )
 
     header = next(csv.reader([lines[header_idx]], delimiter="\t"))
-    if tuple(header) != expected:
-        raise MalformedDatasetError(
-            f"{p.name}:{header_idx + 1}: header must be {list(expected)!r}, "
-            f"got {header!r}"
-        )
+    _expected, keep_len, score_idx = _resolve_header(
+        p, header, header_idx, keep_len, kind
+    )
 
     kept = []
     for lineno, line in enumerate(lines[header_idx + 1 :], header_idx + 2):
@@ -520,9 +585,225 @@ def eval_analogies(
     return aggregate(full_results, "analogy")
 
 
-# number of leading word columns per row for each dataset kind: a similarity
-# row is `word1 word2 score`, an analogy row is `a a_ b b_`
-_WORD_COLUMNS = {"ws": 2, "analogy": 4}
+# ---------------------------------------------------------------------------
+# domain proxy tasks (ADR 0001, P4)
+#
+# Both tasks below exist because the bundled general-language similarity and
+# analogy sets do not serve this package's stated audience: on a small,
+# domain-specific corpus they are largely out-of-vocabulary, so they measure
+# almost nothing. The alternative is not to *rate* domain word pairs -- that
+# needs human judgement, which is the very thing ADR 0001 forbids generating --
+# but to build tasks whose gold answer is a **membership fact** a domain already
+# records. Verification is then a lookup, not an opinion:
+#
+# * synonym multiple choice: gold comes from a thesaurus/glossary entry;
+# * category purity: gold comes from a taxonomy's class assignment.
+#
+# Neither is bundled, and that is deliberate: the useful version of each is
+# built from *the user's own* glossary, so they live behind `data_dir`. See
+# `tools/build_domain_tasks/`.
+# ---------------------------------------------------------------------------
+
+
+def eval_synonyms(
+    vectors, token2id, preproc_fun, lang="en", data_dir=None, include_bundled=True
+):
+    """
+    Evaluate synonym multiple choice: is the true synonym the nearest candidate?
+
+    Each row is ``target answer distractor1 ... distractorK``. The model scores
+    the cosine between the target and every candidate, and the row counts as
+    correct when the answer wins outright. This is the TOEFL-style task, and its
+    appeal for domain evaluation is that the gold answer is a fact a glossary
+    already records rather than a rating someone had to produce.
+
+    Two deliberate strictnesses:
+
+    * **A tie does not count as correct.** The answer must beat every
+      distractor, not merely match the best of them. A model that assigns the
+      identical score to several candidates -- which happens readily on a sparse
+      PPMI matrix where a rare target shares no context with any candidate, so
+      every cosine is 0 -- has not chosen anything, and scoring that as a hit
+      would report a chance artefact as competence.
+    * **A row is scored only if the target and *every* candidate are
+      in-vocabulary.** Dropping just the missing distractors would quietly make
+      the question easier for exactly those rows the corpus covers worst, so a
+      thinner vocabulary would inflate the score. Incomplete rows go to `oov`.
+
+    Note that accuracy here has a chance floor of ``1/(K+1)``, unlike the
+    similarity and analogy scores; compare against that floor, not against 0.
+
+    Pass `data_dir` (with optional `include_bundled`) to evaluate on your own
+    datasets; see `read_test_data`.
+    """
+    full_results = []
+    # rows already counted in the micro/macro pool, so a question shared between
+    # datasets is not weighted more than once
+    seen = set()
+
+    for data in read_test_data(
+        lang, "synonym", data_dir=data_dir, include_bundled=include_bundled
+    ):
+        results = []
+        row_keys = []
+
+        columns = list(setup_test_tokens(data, kind="synonym"))
+        columns = [preproc_fun(col) for col in columns]
+        # strict=False: see the note in eval_similarity
+        rows = list(zip(*columns, strict=False))
+        for row in rows:
+            row = [to_item(entry) for entry in row]
+            if not all(entry in token2id for entry in row):
+                continue
+            target, *candidates = [token2id[entry] for entry in row]
+            # a candidate identical to the target would win on cosine 1 by
+            # construction and says nothing about the embedding
+            if target in candidates or len(set(candidates)) != len(candidates):
+                continue
+            scores = [vectors.similarity(target, c) for c in candidates]
+            answer_score, distractor_scores = scores[0], scores[1:]
+            results.append(1 if answer_score > max(distractor_scores) else 0)
+            row_keys.append((target, tuple(candidates)))
+
+        if len(results) == 0:
+            logger.warning("not enough results for this dataset: %s", data.name)
+            continue
+
+        accuracy = sum(results) / len(results)
+        oov = (len(rows) - len(results)) / len(rows)
+
+        micro_weight = len(set(row_keys) - seen)
+        seen.update(row_keys)
+
+        full_results.append(
+            {
+                "name": f"{lang}_{data_name(data)}",
+                "score": accuracy,
+                "oov": oov,
+                "fullscore": penalize_oov(accuracy, oov),
+                "_micro_weight": micro_weight,
+            }
+        )
+
+    return aggregate(full_results, "synonym choice")
+
+
+def eval_categories(
+    vectors, token2id, preproc_fun, lang="en", data_dir=None, include_bundled=True
+):
+    """
+    Evaluate category purity: does a word's nearest neighbour share its class?
+
+    Each row is ``word category``. For every in-vocabulary word, the nearest
+    other in-vocabulary word *of the dataset* is found by cosine, and the score
+    is the fraction whose nearest neighbour carries the same category label.
+    Gold is again a membership fact -- a taxonomy assignment -- not a judgement.
+
+    Nearest-neighbour purity is used rather than running a clustering algorithm
+    on purpose: k-means would add an initialisation seed, an iteration count and
+    a cluster-count choice, all of which move the number without telling you
+    anything about the embedding. This metric is deterministic given the vectors.
+
+    The neighbour search is restricted to the dataset's own words rather than the
+    whole vocabulary. That keeps the number interpretable -- it asks whether the
+    categories are locally separated *from each other*, which is the question a
+    domain taxonomy poses -- and it makes the chance floor computable, which is
+    the next point.
+
+    **The chance floor is not 0 and it moves with the data**, so the result
+    carries a `baseline` alongside `score`: the purity a random neighbour
+    assignment would give for these category sizes,
+    ``sum(n_c * (n_c - 1)) / (n * (n - 1))``. One dominant category can push that
+    floor high, and a score below it means the embedding is worse than chance.
+    Reporting purity alone would hide that.
+
+    A dataset needs at least two categories and two scoreable words, otherwise
+    purity is trivially 1 and meaningless; such a dataset is skipped with a
+    warning.
+
+    Pass `data_dir` (with optional `include_bundled`) to evaluate on your own
+    datasets; see `read_test_data`.
+    """
+    full_results = []
+    seen = set()
+
+    for data in read_test_data(
+        lang, "category", data_dir=data_dir, include_bundled=include_bundled
+    ):
+        words, categories = setup_test_tokens(data, kind="category")
+        # only the word column is preprocessed; the category is a label, not a
+        # word to be looked up
+        words = preproc_fun(list(words))
+        # strict=False: see the note in eval_similarity
+        rows = list(zip(words, categories, strict=False))
+
+        entries = []
+        for word, category in rows:
+            token = to_item(word)
+            if token in token2id:
+                entries.append((token2id[token], category))
+        # a word appearing twice would be its own nearest neighbour
+        entries = list({idx: (idx, cat) for idx, cat in entries}.values())
+
+        n = len(entries)
+        distinct = {cat for _idx, cat in entries}
+        if n < 2 or len(distinct) < 2:
+            logger.warning(
+                "skipping %s: needs >=2 in-vocabulary words in >=2 categories, "
+                "got %d word(s) in %d categor(y/ies)",
+                data.name,
+                n,
+                len(distinct),
+            )
+            continue
+
+        hits = 0
+        for i, (idx, category) in enumerate(entries):
+            best_score, best_category = None, None
+            for j, (other, other_category) in enumerate(entries):
+                if i == j:
+                    continue
+                score = vectors.similarity(idx, other)
+                if best_score is None or score > best_score:
+                    best_score, best_category = score, other_category
+            hits += 1 if best_category == category else 0
+        purity = hits / n
+
+        sizes = Counter(cat for _idx, cat in entries)
+        # probability that a uniformly random *other* word shares the category
+        baseline = sum(s * (s - 1) for s in sizes.values()) / (n * (n - 1))
+
+        oov = (len(rows) - n) / len(rows) if rows else 0.0
+
+        # the scored word set, so the same taxonomy in two datasets is not
+        # weighted twice
+        word_keys = {idx for idx, _cat in entries}
+        micro_weight = len(word_keys - seen)
+        seen.update(word_keys)
+
+        full_results.append(
+            {
+                "name": f"{lang}_{data_name(data)}",
+                "score": purity,
+                "baseline": baseline,
+                "oov": oov,
+                "fullscore": penalize_oov(purity, oov),
+                "_micro_weight": micro_weight,
+            }
+        )
+
+    return aggregate(full_results, "category purity")
+
+
+# Number of leading word columns per row for each dataset kind: a similarity row
+# is `word1 word2 score`, an analogy row is `a a_ b b_`, a category row is
+# `word category` (only the first column is a word to look up). `None` means
+# *every* column is a word -- a synonym row is all target and candidates, and how
+# many of those there are is declared by the file's own header.
+_WORD_COLUMNS = {"ws": 2, "analogy": 4, "category": 1, "synonym": None}
+
+# the fixed row width of each fixed-width kind; the P4 kinds are read by name
+_KEEP_LEN = {"ws": 3, "analogy": 4}
 
 
 def dataset_coverage(
@@ -543,24 +824,33 @@ def dataset_coverage(
     hyphenated or multi-word entry (which `to_item` drops) therefore counts as
     not-covered, exactly as the evaluator treats it as OOV.
 
-    `kind` is ``"ws"`` (2 word columns) or ``"analogy"`` (4). `data_dir` and
-    `include_bundled` behave as in `read_test_data`. Returns a list of dicts,
-    one per dataset: ``name``, ``kind``, ``rows`` (total), ``covered``
-    (in-vocabulary rows) and ``coverage`` (the fraction, `nan` for an empty
-    dataset).
+    `kind` is ``"ws"`` (2 word columns), ``"analogy"`` (4), ``"synonym"`` (every
+    column: target and all candidates) or ``"category"`` (1; the label is not
+    looked up). `data_dir` and `include_bundled` behave as in `read_test_data`.
+    Returns a list of dicts, one per dataset: ``name``, ``kind``, ``rows``
+    (total), ``covered`` (in-vocabulary rows) and ``coverage`` (the fraction,
+    `nan` for an empty dataset).
+
+    Coverage is the *first* thing to run for the P4 domain tasks: a
+    glossary-built synonym set whose coverage is near zero cannot be scored at
+    all, and knowing that before training is the whole point.
     """
     if kind not in _WORD_COLUMNS:
         raise ValueError(f"kind must be one of {sorted(_WORD_COLUMNS)}, got {kind!r}")
     n_word_cols = _WORD_COLUMNS[kind]
-    keep_len = 3 if kind == "ws" else 4
+    keep_len = _KEEP_LEN.get(kind)
 
     report = []
     for data in read_test_data(
         lang, kind, data_dir=data_dir, include_bundled=include_bundled
     ):
-        columns = list(setup_test_tokens(data, keep_len))
-        # keep only the word columns (drop the trailing similarity score column)
-        # and preprocess each in batch, exactly as the evaluators do
+        if keep_len is None:
+            columns = list(setup_test_tokens(data, kind=kind))
+        else:
+            columns = list(setup_test_tokens(data, keep_len))
+        # keep only the word columns (dropping the similarity score / the
+        # category label) and preprocess each in batch, exactly as the
+        # evaluators do; `None` means every column is a word
         word_columns = [preproc_fun(col) for col in columns[:n_word_cols]]
         # strict=False: preproc_fun need not be length-preserving (see the note
         # in eval_similarity)

@@ -265,6 +265,40 @@ You can also evaluate an existing embedding directly:
   Goldberg 2014), which is usually stronger on analogies than the default
   `objective="add"` (3CosAdd).
 
+### Evaluating on a domain corpus
+
+The bundled sets measure **general language**. On a small, domain-specific
+corpus — the case this package is built for — they are largely out-of-vocabulary
+and therefore measure close to nothing. Check that first, before training:
+
+```python
+bunch.dataset_coverage(kind="ws")   # fraction of each dataset's rows in-vocabulary
+```
+
+If coverage is near zero, the answer is not a better general-language dataset.
+It is a task built from **your** domain's own data. Two are supported, both
+scored on gold that is a *membership fact* rather than a judgement — which is
+why they can be built without anyone rating anything:
+
+- `bunch.eval_synonym(embd, data_dir=...)` — **synonym multiple choice**. Each
+  row is `target answer distractor1 … distractorK`; the row is correct when the
+  answer is the target's nearest candidate. Gold comes from a glossary or
+  thesaurus entry.
+- `bunch.eval_category(embd, data_dir=...)` — **category purity**. Each row is
+  `word category`; the score is the fraction of words whose nearest neighbour in
+  the dataset shares their category. Gold comes from a taxonomy.
+
+Neither is bundled: a general-language synonym set would recreate the very
+problem these solve. Build them from your own data with
+`tools/build_domain_tasks/`, which writes `<out>/<lang>/<kind>/<name>.tsv` —
+exactly the layout `data_dir` expects.
+
+**Both scores have a chance floor above 0.** Synonym accuracy floors at
+`1/(K+1)` (0.25 with three distractors), and each `eval_category` result carries
+a `baseline` next to its `score` because purity's floor depends on the category
+sizes — a score below that baseline is worse than random. Comparing either
+against 0 will make a useless embedding look respectable.
+
 ## `count_pairs` parameters
 
 These shape the co-occurrence matrix. Pass them to `pmi` / `svd` as loose keyword

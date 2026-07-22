@@ -7,6 +7,27 @@ Everything below is user-visible; several items change numeric results.
 
 ### Added
 
+-   **Domain proxy evaluation tasks** (ADR 0001, P4) — the answer for corpora the
+    general-language benchmarks cannot score. Two new dataset kinds, both with gold
+    that is a *membership fact* rather than a rating, so they can be built without
+    anyone judging anything:
+
+    -   `bunch.eval_synonym(embd, data_dir=...)` — synonym multiple choice
+        (`target answer distractor1 … distractorK`), gold from a glossary.
+    -   `bunch.eval_category(embd, data_dir=...)` — category purity
+        (`word category`), gold from a taxonomy, scored by nearest-neighbour purity.
+
+    `dataset_coverage(kind=...)` covers both. Synonym files declare their own width
+    through their header row, which the TSV format (ADR 0002) made possible.
+
+    **No dataset of either kind is bundled**, deliberately: a general-language
+    synonym set would recreate the exact problem these solve. Build them from your
+    own glossary with `tools/build_domain_tasks/`.
+
+    Read the scores against their **chance floor, not 0**: synonym accuracy floors
+    at `1/(K+1)`, and every `eval_category` result carries a `baseline` next to its
+    `score` because purity's floor depends on the category sizes.
+
 -   **Swedish and Danish word-similarity datasets** (ADR 0001, P3):
     `sv/ws/supersim_similarity` and `sv/ws/supersim_relatedness` (1280 pairs each,
     from SuperSim, CC BY 4.0) and `da/ws/ws353` (316 pairs, Danish WordSim-353,

@@ -516,6 +516,42 @@ class Bunch:
             **kwargs,
         )
 
+    def eval_synonym(self, embd, **kwargs):
+        """
+        Evaluate synonym multiple choice -- a domain proxy task (ADR 0001, P4).
+
+        Nothing is bundled for this task: the useful version is built from your
+        own glossary or thesaurus, so pass `data_dir` pointing at a directory
+        with `<lang>/synonym/*.tsv` (or a flat `synonym/*.tsv`). See
+        `tools/build_domain_tasks/` for a builder, and
+        `evaluation.eval_synonyms` for the scoring rules.
+        """
+        return evaluation.eval_synonyms(
+            embd,
+            self.corpus.vocab.token2id,
+            self.corpus.preproc_fun,
+            lang=self.corpus.lang,
+            **kwargs,
+        )
+
+    def eval_category(self, embd, **kwargs):
+        """
+        Evaluate category purity -- a domain proxy task (ADR 0001, P4).
+
+        As with `eval_synonym`, nothing is bundled; supply your taxonomy through
+        `data_dir` as `<lang>/category/*.tsv`. Each result carries a `baseline`
+        next to its `score`: purity has a chance floor that depends on the
+        category sizes, and a score below that floor is worse than random. See
+        `evaluation.eval_categories`.
+        """
+        return evaluation.eval_categories(
+            embd,
+            self.corpus.vocab.token2id,
+            self.corpus.preproc_fun,
+            lang=self.corpus.lang,
+            **kwargs,
+        )
+
     def dataset_coverage(self, kind="ws", **kwargs):
         """
         Report the in-vocabulary fraction of each evaluation dataset.

@@ -62,7 +62,11 @@ dev = [
 packages = ["hyperhyper"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/hyperhyper", "/tests", "/README.md", "/LICENSE"]
+# `/bench` and `/tools` are in the sdist because the test suite imports them
+# (`bench.reference` pins pair-count equivalence, `tools.build_domain_tasks` is
+# tested directly), so an sdist without them cannot run its own tests. Neither is
+# in the wheel: they are maintainer tooling, not runtime code.
+include = ["/hyperhyper", "/tests", "/bench", "/tools", "/README.md", "/LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

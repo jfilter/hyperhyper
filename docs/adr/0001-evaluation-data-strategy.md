@@ -135,6 +135,8 @@ deliberately.
 - **P4 — Objective domain proxy tasks** (synonym multiple-choice from a glossary,
   category purity) — a new `kind` alongside `ws/`/`analogy/`, designed so
   `data_dir` accommodates it. The correct long-term answer for domain evaluation.
+  **Done 2026-07-22 — machinery and a builder, deliberately no bundled data; see
+  the P4 addendum below.**
 
 ## Alternatives considered
 
@@ -252,3 +254,65 @@ verification before any use.
 the fetcher as over-engineered, caught the article-versus-dataset license
 conflation, and named the permissive candidates that were then verified
 independently.*
+
+## Addendum (2026-07-22) — P4 outcome: the domain proxy tasks
+
+P4 was the item this ADR called "the correct long-term answer for domain
+evaluation". It is now implemented, and what shipped is **task machinery plus a
+builder, with no bundled data** — deliberately.
+
+### Why no dataset is bundled
+
+The tasks exist because the bundled similarity and analogy sets measure general
+language, and on the small domain corpora this package targets those sets are
+largely out-of-vocabulary. Bundling a *general-language* synonym set would
+recreate precisely that problem under a new name. The useful version of each
+task is built from the user's own glossary or taxonomy, so both live behind
+`data_dir` — which P1 already provides.
+
+### The two tasks, and why their gold is safe to build
+
+Decision 1 of this ADR forbids generating similarity scores: a model rating word
+pairs turns "agreement with humans" into "agreement with a language model". The
+domain tasks sidestep that entirely by using gold that is a **membership fact**
+the domain already records, so verifying it is a lookup rather than an opinion:
+
+- **Synonym multiple choice** (`synonym/`): rows are `target answer distractor1
+  … distractorK`; gold is a glossary/thesaurus entry.
+- **Category purity** (`category/`): rows are `word category`; gold is a
+  taxonomy's class assignment. Scored as nearest-neighbour purity within the
+  dataset — deliberately *not* k-means, which would add a seed, an iteration
+  count and a cluster count, all of which move the number without saying
+  anything about the embedding.
+
+### Decisions worth recording
+
+- **Variable-width rows are read from the file's own header.** A synonym file
+  declares how many distractors it carries; keying the header by column count,
+  as `ws`/`analogy` do, breaks here (a one-distractor row is three columns and
+  collides with `ws`). This is the capability the ADR-0002 TSV migration was
+  argued for, now actually used.
+- **A tie is not a hit.** The answer must beat every distractor outright. On a
+  sparse PPMI matrix a rare target readily has cosine 0 to every candidate;
+  scoring that as correct would report a chance artefact as competence.
+- **A row with any out-of-vocabulary candidate is not scored.** Dropping only
+  the missing distractors would make questions easier for exactly the rows the
+  corpus covers worst, so a thinner vocabulary would *raise* the score.
+- **Chance floors are surfaced, not left to the reader.** Synonym accuracy
+  floors at `1/(K+1)`, stated in each built file's preamble. Purity's floor
+  depends on category sizes, so every `eval_categories` result carries a
+  `baseline` next to its `score`. Both scores are routinely misread against 0.
+- **The builder refuses to make distractors that are accidentally right.** A
+  distractor is excluded if it is a known synonym of the target anywhere in the
+  glossary, with synonymy treated as symmetric — otherwise a "wrong" option is
+  silently correct and the achievable score is capped invisibly. Distractors are
+  drawn from the glossary's own terms so the task cannot be solved by
+  domain-vs-general separation alone, and the draw is seeded and
+  order-independent, so rebuilding is bit-identical.
+- **Nothing is padded to reach a row count.** Terms with too few eligible
+  distractors, multi-token entries and words with conflicting category labels
+  are dropped and counted in the preamble.
+
+### Status
+
+With P4 done, the ADR 0001 roadmap (P0–P4) is complete.
