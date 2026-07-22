@@ -740,3 +740,19 @@ def test_invalid_chunk_size_is_rejected(tmp_path):
     )
     with pytest.raises(ValueError, match="text_chunk_size"):
         hyperhyper.Bunch(tmp_path / "bad", corpus, text_chunk_size=0)
+
+
+def test_counting_an_unwritten_corpus_says_what_to_do():
+    """
+    `Corpus.from_texts(...)` keeps its sentences in memory; counting reads chunks
+    from disk. Handing one straight to `count_pairs` used to fail six frames down
+    in `pathlib` with "argument should be a str or an os.PathLike object ... not
+    'array'" -- a message naming the symptom and nothing the caller could act on.
+    """
+    corpus = hyperhyper.Corpus.from_texts(["the quick brown fox jumps over it"] * 5)
+    assert not corpus.texts_are_on_disk(), (
+        "fixture is meant to be an in-memory corpus; if from_texts starts "
+        "writing chunks itself, this test no longer tests anything"
+    )
+    with pytest.raises(TypeError, match="texts_to_file"):
+        hyperhyper.count_pairs(corpus)

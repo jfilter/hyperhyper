@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+-   **Counting an in-memory corpus now says what to do instead of raising from
+    inside `pathlib`.** `Corpus.from_texts(...)` keeps its sentences in memory,
+    while counting reads chunks from disk, so passing one straight to
+    `count_pairs` died six frames down with `argument should be a str or an
+    os.PathLike object ... not 'array'`. The message named the symptom and
+    nothing the caller could act on. It now names both fixes — `texts_to_file`,
+    or building through a `Bunch`, which does it for you.
+
+    Present in every released version, not a 0.3.0 regression (0.2.0 fails the
+    same way, with `expected str, bytes or os.PathLike object, not array`).
+
 ## 0.3.0 - 2026-07-22
 
 A performance release: pair counting is now fully vectorized, corpus chunks are

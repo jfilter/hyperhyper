@@ -4,6 +4,7 @@ construct a co-occurrence matrix by counting word pairs (co-locations of words)
 
 import inspect
 import logging
+import os
 import random
 import time
 from collections import defaultdict
@@ -231,6 +232,23 @@ def count_pairs_parallel(texts_paths, count_pairs_closure):
     texts_paths = list(texts_paths)
     if not texts_paths:
         return None
+
+    # Counting reads chunks from disk, one at a time, so that peak memory is set
+    # by the in-flight window rather than by the corpus. A `Corpus` built by
+    # `from_texts`/`from_sents` and never written out still holds its sentences
+    # in memory, and passing one straight to `count_pairs` used to die six frames
+    # down in `pathlib` with "argument should be a str or an os.PathLike object
+    # ... not 'array'" -- a message that names the symptom and not one thing the
+    # caller could do about it.
+    if not isinstance(texts_paths[0], (str, os.PathLike)):
+        raise TypeError(
+            "this corpus holds its texts in memory, but counting reads them "
+            "from disk in chunks. Write them out first:\n\n"
+            "    corpus.texts_to_file(some_directory, text_chunk_size)\n\n"
+            "or build the corpus through a `Bunch`, which does that for you:\n\n"
+            "    bunch = hyperhyper.Bunch(path, corpus)\n"
+            "    bunch.pmi()   # or .svd(), .eval_sim(), ...\n"
+        )
 
     workers = _default_workers()
     order = merge_order(texts_paths)
