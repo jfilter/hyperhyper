@@ -14,7 +14,15 @@ from gensim.utils import SaveLoad
 from tqdm import tqdm
 
 from .preprocessing import tokenize_texts_parallel_v2
-from .utils import _default_workers, chunks, dsum, read_pickle, to_pickle
+from .utils import (
+    _default_workers,
+    chunks,
+    dsum,
+    load_id_chunk,
+    read_pickle,
+    save_id_chunk,
+    to_pickle,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,10 +88,19 @@ def count_tokens(texts):
 
 
 def _texts_to_ids(args):
+    """
+    Turn one file's token lists into id sequences, replacing the file in place.
+
+    The input is the `.pkl` of *token strings* written while the vocabulary was
+    built; the output is the `.npz` id chunk the counter reads (`utils.IdChunk`).
+    The intermediate pickle is removed, so a bunch ends up holding only the id
+    chunks -- and only data, not pickled objects.
+    """
     f, to_indices = args[0], args[1]
     texts = read_pickle(f)
     transformed = [to_indices(t) for t in texts]
-    to_pickle(transformed, f)
+    save_id_chunk(f.with_suffix(".npz"), transformed)
+    f.unlink()
     counts = count_tokens(transformed)
     return len(transformed), counts
 
@@ -154,7 +171,9 @@ class Corpus(SaveLoad):
         if texts is None:
             to_indices = TransformToIndicesClosure(self)
             self.size, self.counts = texts_to_ids(input_text_fns, to_indices)
-            self.input_text_fns = input_text_fns
+            # `_texts_to_ids` replaced each token-string `.pkl` with the `.npz`
+            # id chunk beside it, so that is where the texts now live
+            self.input_text_fns = [f.with_suffix(".npz") for f in input_text_fns]
             self.texts = None
         else:
             to_indices = TransformToIndicesClosure(self)
@@ -197,7 +216,7 @@ class Corpus(SaveLoad):
             fns = []
             directory.mkdir(parents=True, exist_ok=True)
             for i, f in enumerate(self.input_text_fns):
-                new_path = (directory / f"texts_{i}.pkl").resolve()
+                new_path = (directory / f"texts_{i}.npz").resolve()
                 # only works if data and bunch are on same file system
                 f.rename(new_path)
                 fns.append(new_path)
@@ -209,14 +228,14 @@ class Corpus(SaveLoad):
                 # already written to this very directory
                 return
             # a second bunch: recover the token lists from the first one's chunks
-            texts = [t for fn in self.texts for t in read_pickle(fn)]
+            texts = [t for fn in self.texts for t in load_id_chunk(fn)]
         else:
             texts = self.texts
 
         fns = []
         for i, c in enumerate(chunks(texts, text_chunk_size)):
-            fn = (directory / f"texts_{i}.pkl").resolve()
-            to_pickle(c, fn)
+            fn = (directory / f"texts_{i}.npz").resolve()
+            save_id_chunk(fn, c)
             fns.append(fn)
         self.texts = fns
 

@@ -113,6 +113,7 @@ the reference happens to do.
 import math
 import random
 import sys
+from array import array
 from pathlib import Path
 
 import numpy as np
@@ -121,7 +122,7 @@ import pytest
 import hyperhyper
 from hyperhyper import pair_counts
 from hyperhyper.preprocessing import tokenize_texts
-from hyperhyper.utils import read_pickle
+from hyperhyper.utils import load_id_chunk, save_id_chunk, to_pickle
 
 # `bench/` is not a package on the install path; it is a sibling of `tests/`.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -528,7 +529,7 @@ def _dirty_reference(corpus, window, subsample_factor, seed):
     # sorted() so chunk order matches the live merge order; the sum is over
     # independent Bernoulli draws so the distribution does not depend on it
     for path in sorted(corpus.texts):
-        for sentence in read_pickle(path):
+        for sentence in load_id_chunk(path):
             tokens = [t for t in sentence if t != unknown_id]  # delete_oov
             kept = [t for t in tokens if t not in keep or rng.random() <= keep[t]]
             n = len(kept)
@@ -824,7 +825,7 @@ def test_vectorized_path_is_actually_taken(grid_corpus):
     returned `None` every time and everything quietly fell back to the loop --
     bit-identical, and pointless. Assert the fast path really runs.
     """
-    texts = read_pickle(grid_corpus.texts[0])
+    texts = load_id_chunk(grid_corpus.texts[0])
     assert _closure(grid_corpus).count_texts_vectorized(texts) is not None
 
 
@@ -858,7 +859,7 @@ def test_oversized_chunk_falls_back_to_the_identical_matrix(
     result -- otherwise a corpus would score differently depending on how it
     happened to be chunked.
     """
-    texts = read_pickle(grid_corpus.texts[0])
+    texts = load_id_chunk(grid_corpus.texts[0])
     closure = _closure(grid_corpus, window=window, dynamic_window=dynamic_window)
 
     fast = closure.count_texts(texts, random.Random(0))
@@ -957,3 +958,79 @@ def test_prob_window_is_vectorized_but_subsampling_is_not(grid_corpus):
         _closure(grid_corpus, subsample="dirty", subsampler_prob=keep).is_vectorizable()
         is False
     )
+
+
+# --------------------------------------------------------------------------
+# the `.npz` chunk format, and the `.pkl` bunches that predate it
+# --------------------------------------------------------------------------
+
+
+def test_chunks_are_written_as_npz(grid_corpus):
+    assert grid_corpus.texts, "the fixture corpus has no chunks"
+    assert all(Path(p).suffix == ".npz" for p in grid_corpus.texts)
+
+
+def test_a_legacy_pickled_bunch_still_counts_identically(grid_corpus, tmp_path):
+    """
+    The migration must not strand a bunch somebody already has on disk.
+
+    Chunks written before the switch are pickled `array('H')` sentences. This
+    rebuilds exactly that -- same sentences, same order, same chunk boundaries,
+    only the old container -- and requires the counter to produce the *same
+    matrix* from it. Anything else would silently change the numbers of every
+    existing bunch on its next run.
+    """
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir()
+    legacy_paths = []
+    for i, path in enumerate(grid_corpus.texts):
+        sentences = [array("H", s) for s in load_id_chunk(path)]
+        legacy = (legacy_dir / f"texts_{i}.pkl").resolve()
+        to_pickle(sentences, legacy)
+        legacy_paths.append(legacy)
+
+    class _LegacyCorpus:
+        vocab = grid_corpus.vocab
+        counts = grid_corpus.counts
+        texts = legacy_paths
+
+    for window, dynamic_window in ((2, "deter"), (5, "decay"), (5, "prob")):
+        new = hyperhyper.count_pairs(
+            grid_corpus, window=window, dynamic_window=dynamic_window, subsample=None
+        ).toarray()
+        old = hyperhyper.count_pairs(
+            _LegacyCorpus, window=window, dynamic_window=dynamic_window, subsample=None
+        ).toarray()
+        np.testing.assert_array_equal(
+            new,
+            old,
+            err_msg=(
+                f"a pickled (pre-migration) bunch counted differently from the "
+                f"same corpus stored as .npz, for window={window} "
+                f"dynamic_window={dynamic_window!r}"
+            ),
+        )
+        assert new.sum() > 0
+
+
+def test_id_chunk_roundtrips_and_iterates_like_the_old_format(tmp_path):
+    sentences = [[1, 2, 3], [4], [], [5, 6]]
+    path = tmp_path / "c.npz"
+    save_id_chunk(path, sentences)
+    loaded = load_id_chunk(path)
+    assert list(loaded) == sentences  # plain Python lists, as the loop expects
+    assert len(loaded) == 4
+    assert loaded[1] == [4]
+    # a slice is a view over the boundaries, not a rebuilt list of sentences
+    assert list(loaded[1:3]) == [[4], []]
+
+
+def test_id_chunk_picks_a_width_that_holds_the_ids(tmp_path):
+    narrow = tmp_path / "narrow.npz"
+    save_id_chunk(narrow, [[1, 65535]])
+    assert load_id_chunk(narrow).flat.dtype == np.uint16
+
+    wide = tmp_path / "wide.npz"
+    save_id_chunk(wide, [[1, 70000]])
+    assert load_id_chunk(wide).flat.dtype == np.uint32
+    assert list(load_id_chunk(wide)) == [[1, 70000]]

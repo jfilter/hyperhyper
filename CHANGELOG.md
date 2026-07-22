@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Changed
+
+-   **Corpus chunks are stored as `.npz`, not pickles.** A chunk is now a flat id
+    array plus sentence offsets (`utils.IdChunk`) instead of a pickled list of
+    `array('H')`. Three reasons: it loads **6x faster** (10.7ms to 1.7ms for a
+    400k-token chunk, ~19% off the counting stage end to end), it is slightly
+    smaller, and it is **data rather than code** — 40 of the 41 files in a bunch
+    directory no longer execute anything on load. It is also the exact layout the
+    vectorized counter builds for itself, so it now skips flattening entirely.
+
+    Bunches written before this keep working: the loader dispatches on the file
+    extension, never by sniffing, and pickled chunks still read. This is tested by
+    rebuilding a legacy bunch and requiring an identical matrix.
+
+-   **The per-chunk RNG seed no longer includes the file extension.** It was
+    derived from the chunk's full filename, so `texts_0.pkl` and `texts_0.npz`
+    drew *different numbers* — the on-disk **format was part of the answer**, and
+    migrating a corpus would have silently changed every randomized result
+    without a single token moving. It now uses the stem.
+
+    > **This moves results for randomized configurations once:**
+    > `dynamic_window="prob"`, `subsample="prob"` and `subsample="dirty"` produce
+    > different (equally valid) matrices than in 0.2.0 for the same seed. **The
+    > defaults are unaffected** — `dynamic_window="deter"` and
+    > `subsample="deter"` draw no random numbers at all, so every default result
+    > is bit-identical. Same-version results remain reproducible as before.
+
 ### Added
 
 -   **`dynamic_window="prob"` is vectorized too, and is now bit-identical.**

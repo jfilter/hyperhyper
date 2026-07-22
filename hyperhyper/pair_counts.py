@@ -22,8 +22,9 @@ from tqdm import tqdm
 from .utils import (
     _MISSING_MAIN_GUARD,
     BrokenProcessPool,
+    IdChunk,
     _default_workers,
-    read_pickle,
+    load_id_chunk,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,7 +135,7 @@ def _estimate_serial_seconds(texts_paths, count_pairs_closure):
     an 8x spread that no single token-count threshold can straddle. Getting this
     wrong in the "prob" direction is exactly the case the pool loses on.
     """
-    texts = read_pickle(texts_paths[0])
+    texts = load_id_chunk(texts_paths[0])
     if not texts:
         return 0.0
     sample = texts[:PROBE_SENTENCES]
@@ -328,11 +329,17 @@ class CountPairsClosure:
         self.seed = seed
 
     def __call__(self, text_path):
-        texts = read_pickle(text_path)
-        # a per-file RNG, derived from a stable string, so the randomized parts
+        texts = load_id_chunk(text_path)
+        # A per-file RNG, derived from a stable string, so the randomized parts
         # are reproducible no matter how the workers are started (spawn does not
-        # inherit the parent's RNG state) or in which order the futures complete
-        rng = random.Random(f"{self.seed}-{Path(text_path).name}")
+        # inherit the parent's RNG state) or in which order the futures complete.
+        #
+        # The *stem*, not the full name: this used to include the extension, so
+        # `texts_0.pkl` and `texts_0.npz` drew different numbers and the on-disk
+        # FORMAT was part of the answer. Migrating a corpus from one to the other
+        # then silently changed every randomized result, though not a single
+        # token had moved. A storage detail must not reach the numbers.
+        rng = random.Random(f"{self.seed}-{Path(text_path).stem}")
         return self.count_texts(texts, rng)
 
     def uses_rng(self):
@@ -439,19 +446,33 @@ class CountPairsClosure:
         a lookup table over the `window + 1` possible distances -- not from
         `np.exp`, which is free to differ in the last bit.
         """
-        arrays = []
-        for tokens in texts:
-            sentence = np.asarray(tokens, dtype=np.int64)
+        if isinstance(texts, IdChunk):
+            # already flat on disk (`utils.IdChunk`), so there is nothing to
+            # concatenate -- the npz chunk format was chosen for exactly this
+            flat = texts.flat.astype(np.int64, copy=False)
+            boundaries = texts.offsets
             if self.delete_oov:
                 # `vocab_size` is the <UNK> id; dropping it CLOSES the window
-                # over that slot, exactly as the loop's list comprehension does
-                sentence = sentence[sentence != self.vocab_size]
-            arrays.append(sentence)
+                # over that slot, exactly as the loop's comprehension does.
+                # Re-deriving the boundaries from the surviving-token counts
+                # keeps the sentences intact without unpacking them.
+                keep_token = flat != self.vocab_size
+                kept_before = np.concatenate(([0], np.cumsum(keep_token)))
+                boundaries = kept_before[boundaries]
+                flat = flat[keep_token]
+            lengths = np.diff(boundaries)
+        else:
+            arrays = []
+            for tokens in texts:
+                sentence = np.asarray(tokens, dtype=np.int64)
+                if self.delete_oov:
+                    sentence = sentence[sentence != self.vocab_size]
+                arrays.append(sentence)
+            lengths = np.array([len(a) for a in arrays], dtype=np.int64)
+            flat = np.concatenate(arrays) if arrays else np.zeros(0, dtype=np.int64)
 
-        lengths = np.array([len(a) for a in arrays], dtype=np.int64)
         if not len(lengths) or lengths.sum() == 0:
             return to_count_matrix({}, self.vocab_size)
-        flat = np.concatenate(arrays)
 
         # per position: the bounds of the sentence it belongs to
         sentence_start = np.repeat(np.cumsum(lengths) - lengths, lengths)

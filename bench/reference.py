@@ -82,9 +82,12 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse import coo_matrix
 
-# The one import from live code, and it is not counting logic: `read_pickle` is
-# how a chunk file is read off disk.
-from hyperhyper.utils import read_pickle
+# The one import from live code, and it is not counting logic: `load_id_chunk` is
+# how a chunk file is read off disk. It was `read_pickle` until the chunk format
+# moved to `.npz`; swapping it is I/O, not math, and is what keeps this snapshot
+# readable against corpora written by the current code. `load_id_chunk` reads
+# both formats, so a bunch built before the switch still compares.
+from hyperhyper.utils import load_id_chunk
 
 # --------------------------------------------------------------------------
 # frozen: hyperhyper/pair_counts.py @ f68cc74 + the merge-order change
@@ -191,8 +194,12 @@ def _count_one_chunk(text_path, params):
     Mirrors `CountPairsClosure.__call__` @ f68cc74, including the per-file RNG
     derived from a stable string (so it does not depend on chunk *order*).
     """
-    texts = read_pickle(text_path)
-    rng = random.Random(f"{params['seed']}-{Path(text_path).name}")
+    texts = load_id_chunk(text_path)
+    # `.stem`, matching the live code: the extension used to be in here, which
+    # made the chunk format part of the draw stream (see `pair_counts`). This is
+    # the same class of adaptation as the loader import above -- where the bytes
+    # come from, not what is computed from them.
+    rng = random.Random(f"{params['seed']}-{Path(text_path).stem}")
     counter = defaultdict(int)
     for t in texts:
         for pair in iterate_tokens(

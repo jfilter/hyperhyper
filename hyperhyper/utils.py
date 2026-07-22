@@ -165,6 +165,93 @@ def load_matrix(f):
         )
 
 
+class IdChunk:
+    """
+    One on-disk chunk of a corpus: ragged token-id sentences, stored flat.
+
+    `.npz` cannot hold a ragged array, so a chunk is kept as a single flat id
+    array plus the sentence boundaries -- which is *also* the layout the
+    vectorized counter builds for itself, so reading a chunk in this form lets
+    it skip the flattening entirely.
+
+    Iterating yields ordinary Python lists, one per sentence, so the
+    non-vectorized counting loop sees exactly what it saw when chunks were
+    pickled `array('H')`s. `flat`/`offsets` are there for the callers that want
+    the whole chunk at once.
+    """
+
+    __slots__ = ("flat", "offsets")
+
+    def __init__(self, flat, offsets):
+        self.flat = flat
+        self.offsets = offsets
+
+    @classmethod
+    def from_sentences(cls, sentences):
+        """Build a chunk from any iterable of id sequences."""
+        sentences = [np.asarray(s, dtype=np.int64) for s in sentences]
+        lengths = np.array([len(s) for s in sentences], dtype=np.int64)
+        flat = np.concatenate(sentences) if sentences else np.zeros(0, dtype=np.int64)
+        # the smallest width that holds every id, mirroring the `array('H')`
+        # / `array('L')` choice the pickled format made
+        dtype = np.uint16 if (flat.size and flat.max() <= 65535) else np.uint32
+        offsets = np.concatenate(([0], np.cumsum(lengths))).astype(np.int64)
+        return cls(flat.astype(dtype, copy=False), offsets)
+
+    def __len__(self):
+        return len(self.offsets) - 1
+
+    def __iter__(self):
+        flat, offsets = self.flat, self.offsets
+        for i in range(len(offsets) - 1):
+            # `tolist()` gives Python ints, so the counting loop's dict keys and
+            # comparisons are exactly what they were with `array('H')`
+            yield flat[offsets[i] : offsets[i + 1]].tolist()
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            start, stop, step = index.indices(len(self))
+            if step != 1:
+                return [self[i] for i in range(start, stop, step)]
+            # a view of the boundaries, not a copy of every sentence: the probe
+            # in `_estimate_serial_seconds` slices a couple of thousand
+            # sentences off a chunk that may hold a hundred thousand
+            return IdChunk(
+                self.flat[self.offsets[start] : self.offsets[stop]],
+                self.offsets[start : stop + 1] - self.offsets[start],
+            )
+        return self.flat[self.offsets[index] : self.offsets[index + 1]].tolist()
+
+
+def save_id_chunk(path, sentences):
+    """Write a corpus chunk as `.npz` (see `IdChunk`), atomically."""
+    chunk = (
+        sentences
+        if isinstance(sentences, IdChunk)
+        else IdChunk.from_sentences(sentences)
+    )
+    with atomic_path(path) as tmp:
+        np.savez(str(tmp) + ".npz", flat=chunk.flat, offsets=chunk.offsets)
+        os.replace(str(tmp) + ".npz", tmp)
+
+
+def load_id_chunk(path):
+    """
+    Read a corpus chunk, in either format.
+
+    `.npz` is the current one; `.pkl` is what bunches built before the switch
+    hold, and they keep working -- the format is chosen by extension, never by
+    sniffing, the same rule the evaluation data follows (ADR 0002). A pickled
+    chunk is returned as-is (a list of `array('H')`), which every caller already
+    handles.
+    """
+    path = Path(path)
+    if path.suffix == ".npz":
+        with np.load(path, allow_pickle=False) as loader:
+            return IdChunk(loader["flat"], loader["offsets"])
+    return read_pickle(path)
+
+
 def chunks(seq, n):
     """
     Yield successive n-sized chunks from seq.

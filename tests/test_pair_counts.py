@@ -7,7 +7,7 @@ import pytest
 import hyperhyper
 from hyperhyper import bunch, pair_counts, utils
 from hyperhyper.preprocessing import tokenize_texts
-from hyperhyper.utils import read_pickle
+from hyperhyper.utils import load_id_chunk
 
 
 @pytest.fixture()
@@ -709,7 +709,7 @@ def test_bunch_writes_the_same_chunks_whatever_the_core_count(tmp_path, monkeypa
             m.setattr(bunch, "_default_workers", lambda w=workers: w, raising=False)
             b = hyperhyper.Bunch(tmp_path / f"w{workers}", corpus)
             try:
-                layouts.append([len(t) for t in map(read_pickle, b.corpus.texts)])
+                layouts.append([len(t) for t in map(load_id_chunk, b.corpus.texts)])
             finally:
                 b.close()
     assert layouts[0] == layouts[1] == layouts[2], (
