@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-07-22
+
+A performance release: pair counting is now fully vectorized, corpus chunks are
+data rather than pickles, and the SVD backend choice is measured instead of
+guessed.
+
+> **Reported numbers move in exactly one place.** Randomized configurations —
+> `dynamic_window="prob"`, `subsample="prob"`, `subsample="dirty"` — produce
+> different (equally valid) matrices than 0.2.0 at the same seed, because the
+> per-chunk RNG seed no longer includes the file extension. **The defaults are
+> bit-identical**: `dynamic_window="deter"` and `subsample="deter"` draw no
+> random numbers at all. Everything else in this release, the vectorization
+> included, is bit-identical by construction and by test — including the
+> randomized paths, which reproduce their draw streams rather than replacing
+> them.
 
 ### Changed
 
