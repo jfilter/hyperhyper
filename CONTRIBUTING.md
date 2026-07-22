@@ -100,6 +100,29 @@ subtly (a precision or ordering change). When you touch these:
 - User-visible changes belong in `CHANGELOG.md`, especially anything that changes
   numeric results or breaks an API.
 
+## Releasing
+
+Releases are published by pushing a tag; `.github/workflows/publish.yml` does
+the rest. There is **no PyPI token** in this repository or its secrets — the
+workflow authenticates with Trusted Publishing (OIDC), so GitHub mints a
+short-lived credential scoped to this repository, this workflow file and the
+`pypi` environment. Nothing long-lived exists to leak.
+
+1. Move the `Unreleased` CHANGELOG entries under a new `## X.Y.Z - YYYY-MM-DD`
+   heading, and say at the top of it if reported **numbers** move — that is the
+   part users cannot infer from a diff.
+2. Bump `version` in `pyproject.toml`.
+3. Commit, then `git tag -a vX.Y.Z -m "..."` and `git push --follow-tags`.
+
+The workflow builds once and publishes that exact artifact, refusing to go on if
+the tag disagrees with the built version (a `v0.2.0` tag on a `0.1.1` build
+would publish `0.1.1` and burn that number — PyPI never allows re-uploading a
+version), if `twine check --strict` rejects the metadata, or if the installed
+wheel cannot import and find its bundled evaluation data.
+
+Give the `pypi` environment required reviewers in the repository settings. Then
+a tag pushed by accident waits for an approval click instead of shipping.
+
 ## Questions and bugs
 
 For questions, bug reports and feature proposals, use the

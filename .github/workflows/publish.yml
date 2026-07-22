@@ -1,0 +1,110 @@
+name: Publish
+
+# Publishing is triggered by pushing a version tag, and by nothing else. A
+# release is a deliberate act: `main` moves often, and a push-to-main trigger
+# would eventually ship something nobody decided to ship.
+#
+# There is no PyPI token anywhere in this repository or in its secrets. The job
+# authenticates with **Trusted Publishing** (OIDC): GitHub mints a short-lived
+# token for this exact repository, workflow file and environment, and PyPI
+# exchanges it for an upload permission that expires in minutes. Nothing
+# long-lived exists to leak, and a token cannot be copied out of a fork or a
+# pull request because those do not run with this repository's identity.
+#
+# ONE-TIME SETUP ON PYPI (this workflow cannot do it for you)
+# ----------------------------------------------------------
+# At https://pypi.org/manage/project/hyperhyper/settings/publishing/ add a
+# trusted publisher with exactly these values -- PyPI matches them literally,
+# and a mismatch fails the upload with "invalid publisher":
+#
+#     Owner:            jfilter
+#     Repository:       hyperhyper
+#     Workflow name:    publish.yml
+#     Environment name: pypi
+#
+# Then, in this repository's Settings -> Environments, create an environment
+# named `pypi`. Adding required reviewers to it is worth doing: it turns every
+# release into an explicit approval click, which is the last chance to stop a
+# tag that was pushed by accident.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  # Build once, publish that exact artifact. Building inside the publish job
+  # would mean the thing tested and the thing uploaded were produced by two
+  # different runs of the same steps -- almost always identical, and impossible
+  # to prove after the fact.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+
+      - run: uv build
+
+      # The tag is the release's identity, so it has to agree with the version
+      # actually inside the artifacts. A tag that says v0.2.0 while pyproject
+      # still says 0.1.1 would publish 0.1.1 and burn that version number
+      # forever -- PyPI does not allow re-uploading one.
+      - name: Tag must match the built version
+        run: |
+          built=$(ls dist/*.whl | sed -E 's/.*hyperhyper-([^-]+)-py3.*/\1/')
+          tag="${GITHUB_REF_NAME#v}"
+          echo "tag=$tag built=$built"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$tag" != "$built" ]; then
+            echo "::error::tag v$tag does not match built version $built"
+            exit 1
+          fi
+
+      # Catches the metadata failures that only surface at upload time -- a
+      # README PyPI cannot render, a malformed classifier, a missing license
+      # field. Cheaper to fail here than to have burned the version number.
+      - name: Check package metadata
+        run: uvx twine check --strict dist/*
+
+      # A wheel that imports but ships no evaluation data would still pass the
+      # test suite, which runs against the source tree rather than the artifact.
+      - name: Installed wheel works and carries its data
+        run: |
+          uv venv /tmp/verify
+          uv pip install --python /tmp/verify/bin/python dist/*.whl
+          /tmp/verify/bin/python - <<'PY'
+          from importlib.metadata import version
+          from hyperhyper.evaluation import read_test_data
+          print("version:", version("hyperhyper"))
+          bundled = {
+              lang: sum(len(read_test_data(lang, k)) for k in ("ws", "analogy"))
+              for lang in ("en", "de", "fr", "sv", "da")
+          }
+          print("bundled datasets:", bundled)
+          assert sum(bundled.values()) >= 23, bundled
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # The name PyPI's trusted publisher is pinned to. Also the gate: give this
+    # environment required reviewers and no release ships unapproved.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/hyperhyper
+    permissions:
+      # OIDC. This is the whole mechanism -- without it there is no identity to
+      # present to PyPI, and there is no token to fall back on.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
