@@ -42,9 +42,13 @@ def _discover():
     """Every bundled `.txt` dataset, as `(lang, kind, n_fields, name)` tuples."""
     root = files(evaluation_datasets)
     found = []
-    for lang in ("en", "de"):
+    # `fr` ships an analogy-only pack (ADR 0001, P2); a language need not have
+    # every kind, so skip a `<lang>/<kind>` directory that is not present.
+    for lang in ("en", "de", "fr"):
         for kind, n_fields in KIND_FIELDS.items():
             directory = root.joinpath(lang).joinpath(kind)
+            if not directory.is_dir():
+                continue
             for p in directory.iterdir():
                 if p.name.endswith(".txt"):
                     found.append((lang, kind, n_fields, p.name))

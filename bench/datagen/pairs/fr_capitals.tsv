@@ -1,0 +1,73 @@
+# Base relation pairs: capital -> country, in French. One-to-one, fact-verifiable.
+# Columns (TAB-separated): capital<TAB>country<TAB>source
+# All facts verified 2026-07-22 against the authoritative, non-LLM sources keyed below.
+#   wp-capitals   = Wikipedia "List of national capitals"        (capital fact)
+#                   https://en.wikipedia.org/wiki/List_of_national_capitals
+#   frwp-capitals = French Wikipedia "Liste des capitales du monde" (French spelling)
+#                   https://fr.wikipedia.org/wiki/Liste_des_capitales_du_monde
+# Only pairs whose capital AND country are each a single token under the package
+# preprocessing (hyperhyper.preprocessing.tokenize_string) are listed here; multi-token
+# forms (etats-unis, royaume-uni, pays-bas, nouvelle-zelande, le caire, ...) are excluded.
+paris	france	wp-capitals+frwp-capitals
+madrid	espagne	wp-capitals+frwp-capitals
+berlin	allemagne	wp-capitals+frwp-capitals
+rome	italie	wp-capitals+frwp-capitals
+lisbonne	portugal	wp-capitals+frwp-capitals
+vienne	autriche	wp-capitals+frwp-capitals
+athènes	grèce	wp-capitals+frwp-capitals
+bruxelles	belgique	wp-capitals+frwp-capitals
+dublin	irlande	wp-capitals+frwp-capitals
+oslo	norvège	wp-capitals+frwp-capitals
+stockholm	suède	wp-capitals+frwp-capitals
+helsinki	finlande	wp-capitals+frwp-capitals
+copenhague	danemark	wp-capitals+frwp-capitals
+varsovie	pologne	wp-capitals+frwp-capitals
+prague	tchéquie	wp-capitals+frwp-capitals
+budapest	hongrie	wp-capitals+frwp-capitals
+moscou	russie	wp-capitals+frwp-capitals
+berne	suisse	wp-capitals+frwp-capitals
+sofia	bulgarie	wp-capitals+frwp-capitals
+bucarest	roumanie	wp-capitals+frwp-capitals
+zagreb	croatie	wp-capitals+frwp-capitals
+ljubljana	slovénie	wp-capitals+frwp-capitals
+bratislava	slovaquie	wp-capitals+frwp-capitals
+riga	lettonie	wp-capitals+frwp-capitals
+vilnius	lituanie	wp-capitals+frwp-capitals
+tallinn	estonie	wp-capitals+frwp-capitals
+reykjavik	islande	wp-capitals+frwp-capitals
+minsk	biélorussie	wp-capitals+frwp-capitals
+kiev	ukraine	wp-capitals+frwp-capitals
+chisinau	moldavie	wp-capitals+frwp-capitals
+tokyo	japon	wp-capitals+frwp-capitals
+pékin	chine	wp-capitals+frwp-capitals
+bangkok	thaïlande	wp-capitals+frwp-capitals
+islamabad	pakistan	wp-capitals+frwp-capitals
+kaboul	afghanistan	wp-capitals+frwp-capitals
+bagdad	irak	wp-capitals+frwp-capitals
+téhéran	iran	wp-capitals+frwp-capitals
+damas	syrie	wp-capitals+frwp-capitals
+beyrouth	liban	wp-capitals+frwp-capitals
+amman	jordanie	wp-capitals+frwp-capitals
+doha	qatar	wp-capitals+frwp-capitals
+ankara	turquie	wp-capitals+frwp-capitals
+manille	philippines	wp-capitals+frwp-capitals
+tunis	tunisie	wp-capitals+frwp-capitals
+alger	algérie	wp-capitals+frwp-capitals
+rabat	maroc	wp-capitals+frwp-capitals
+tripoli	libye	wp-capitals+frwp-capitals
+dakar	sénégal	wp-capitals+frwp-capitals
+nairobi	kenya	wp-capitals+frwp-capitals
+accra	ghana	wp-capitals+frwp-capitals
+abuja	nigeria	wp-capitals+frwp-capitals
+luanda	angola	wp-capitals+frwp-capitals
+harare	zimbabwe	wp-capitals+frwp-capitals
+kampala	ouganda	wp-capitals+frwp-capitals
+khartoum	soudan	wp-capitals+frwp-capitals
+ottawa	canada	wp-capitals+frwp-capitals
+lima	pérou	wp-capitals+frwp-capitals
+bogota	colombie	wp-capitals+frwp-capitals
+caracas	venezuela	wp-capitals+frwp-capitals
+santiago	chili	wp-capitals+frwp-capitals
+montevideo	uruguay	wp-capitals+frwp-capitals
+managua	nicaragua	wp-capitals+frwp-capitals
+canberra	australie	wp-capitals+frwp-capitals
