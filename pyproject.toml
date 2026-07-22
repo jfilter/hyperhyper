@@ -83,6 +83,9 @@ ignore = ["E501"]
 # the benchmark's whole output is a printed table; `reference.py` is a frozen
 # snapshot of pair_counts.py and is deliberately kept verbatim
 "bench/**" = ["T20"]
+# the importer is a maintainer CLI: its progress and provenance report *is* its
+# output, and it is not shipped in the wheel
+"tools/**" = ["T20"]
 
 [tool.ruff.format]
 docstring-code-format = true

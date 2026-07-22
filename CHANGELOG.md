@@ -7,6 +7,22 @@ Everything below is user-visible; several items change numeric results.
 
 ### Added
 
+-   **Swedish and Danish word-similarity datasets** (ADR 0001, P3):
+    `sv/ws/supersim_similarity` and `sv/ws/supersim_relatedness` (1280 pairs each,
+    from SuperSim, CC BY 4.0) and `da/ws/ws353` (316 pairs, Danish WordSim-353,
+    CC-BY). `lang="sv"` and `lang="da"` now have bundled evaluation data. Each file
+    names its source URL, source SHA-256, license, *where the license statement was
+    read*, and citation in its own `#` preamble, and counts every dropped row.
+    Scores are the published aggregates — nothing was recomputed or rescaled.
+
+    Two caveats, stated rather than buried: the Danish scores are the **original
+    English** human ratings carried over with translated word pairs, not ratings
+    re-elicited from Danish speakers; and coverage stops here because of
+    **licensing**, not effort — most published similarity sets state no license at
+    all, and only sets whose permissive license is evidenced on the artifact
+    itself are bundled. Use `data_dir` for anything else. See the P3 addendum in
+    ADR 0001, and `tools/import_eval_data/` for the importer.
+
 -   **curated-v3 restores 1030 evaluation rows** the old tokenizer had made
     unscoreable (`de/ws/gur350` +10, `en/ws/luong_rare` +20, `en/analogy/msr`
     +1000). Those rows were dropped in curated-v2 not because the data was bad but

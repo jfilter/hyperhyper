@@ -56,13 +56,31 @@ KIND_HEADER = {
 }
 
 
+def _languages():
+    """
+    Every bundled language directory, found rather than listed.
+
+    Discovering these keeps the linter honest as languages are added: a
+    hardcoded tuple silently stops linting a new language (`sv`, `da` from ADR
+    0001's P3 import) instead of failing, which is the wrong direction for an
+    acceptance gate.
+    """
+    root = files(evaluation_datasets)
+    return sorted(
+        p.name
+        for p in root.iterdir()
+        if p.is_dir() and not p.name.startswith(("_", "."))
+    )
+
+
 def _discover():
     """Every bundled `.tsv` dataset, as `(lang, kind, n_fields, name)` tuples."""
     root = files(evaluation_datasets)
     found = []
-    # `fr` ships an analogy-only pack (ADR 0001, P2); a language need not have
-    # every kind, so skip a `<lang>/<kind>` directory that is not present.
-    for lang in ("en", "de", "fr"):
+    # `fr` ships an analogy-only pack (ADR 0001, P2) and `sv`/`da` a
+    # similarity-only one (P3); a language need not have every kind, so skip a
+    # `<lang>/<kind>` directory that is not present.
+    for lang in _languages():
         for kind, n_fields in KIND_FIELDS.items():
             directory = root.joinpath(lang).joinpath(kind)
             if not directory.is_dir():
@@ -119,7 +137,7 @@ _PARAMS = pytest.mark.parametrize("lang,kind,n_fields,name", DATASETS, ids=DATAS
 def test_datasets_were_discovered():
     # a broken glob that finds nothing would make every parametrized test below
     # vacuously pass; assert we are actually linting a realistic number of files
-    assert len(DATASETS) >= 19
+    assert len(DATASETS) >= 22
 
 
 @_PARAMS
@@ -245,7 +263,7 @@ def test_no_dataset_ships_in_both_formats():
     # discovery raises rather than scoring a dataset present as both foo.tsv and
     # foo.txt; assert every bundled `<lang>/<kind>` directory is clean
     root = files(evaluation_datasets)
-    for lang in ("en", "de", "fr"):
+    for lang in _languages():
         for kind in KIND_FIELDS:
             directory = root.joinpath(lang).joinpath(kind)
             if directory.is_dir():

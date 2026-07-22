@@ -85,7 +85,13 @@ Notes:
   vocabulary be estimated from a random subset of the files (`seed` makes that
   sampling reproducible).
 - **`lang`** (default `"en"`) selects which bundled evaluation datasets are used
-  later and must match the language of your texts.
+  later and must match the language of your texts. Bundled: `en` and `de`
+  (similarity + analogy), `fr` (analogy), `sv` and `da` (similarity). Every
+  bundled file names its source, license and citation in its own `#` preamble.
+  Coverage is limited by *licensing*, not by effort — most published similarity
+  sets state no license at all, and only sets with an explicit permissive
+  license evidenced on the artifact itself are bundled (see ADR 0001, P3). For
+  anything else, and for your own domain data, use `data_dir`.
 - **`**kwargs`** flow through to `Vocab.filter`, which controls the vocabulary:
   `no_below=0`, `no_above=1`, `keep_n=50000`, `keep_tokens=None` (the same
   arguments as gensim's `filter_extremes`). `keep_n` is the vocabulary-size cap;

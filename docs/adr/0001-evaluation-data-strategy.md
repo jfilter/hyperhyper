@@ -130,6 +130,8 @@ deliberately.
   `curated-v2` regeneration and then new languages (ES, FR, then a
   morphology-rich one), gated by the linter and factual verification.
 - **P3 — Import human similarity sets** for new languages (license-checked).
+  **Done 2026-07-22 — and the license check turned out to be the whole story;
+  see the addendum below.**
 - **P4 — Objective domain proxy tasks** (synonym multiple-choice from a glossary,
   category purity) — a new `kind` alongside `ws/`/`analogy/`, designed so
   `data_dir` accommodates it. The correct long-term answer for domain evaluation.
@@ -144,3 +146,109 @@ deliberately.
 - **Do nothing / keep the package lightweight** — partially adopted: we add no
   runtime dependency, but the live aggregation bug and the missing `data_dir`
   are real defects worth fixing regardless of the generation question.
+
+## Addendum (2026-07-22) — P3 outcome: licensing is the binding constraint
+
+P3 was scoped as a small, additive import. It is recorded here at length because
+what it actually established is a **limit on this package's evaluation coverage
+that no amount of further work removes**, and because the first design for
+working around that limit was wrong.
+
+### What the license check found
+
+- **Multi-SimLex** (the obvious candidate: 12+ languages, 1,888 aligned pairs
+  each) carries a CC BY-NC-ND 4.0 notice on its *Computational Linguistics
+  article*. Whether that notice reaches the separately downloadable data files
+  could not be established — the project site was unreachable during the check.
+  An article's license does not automatically license the data, so the dataset's
+  status is **unresolved**, not "NC/ND". NC would in any case sit badly inside a
+  BSD-2-Clause wheel.
+- The **RG-65/MC-30 translations** (fr/es/pt/fa, Camacho-Collados et al. 2015),
+  the **Leviant** translations, and several SimLex-999 translations state **no
+  license at all** on their download pages.
+- Four candidate data repositories were queried through the GitHub API. Every
+  one reported no license (`estsl/EstSimLex-999`, `ckittask/SimLex-999-est-eng`,
+  `kliegr/word_similarity_relatedness_datasets`, and
+  `kuhumcst/Danish-Similarity-Dataset`, the last as `NOASSERTION`). The one MIT
+  result, `kudkudak/word-embeddings-benchmarks`, licenses *code* and ships no
+  data.
+
+**Operational rule adopted: no license means all rights reserved, not "free".**
+Copyright — and, in the EU, database rights — arise without an explicit grant.
+Public download access may authorize downloading; it does not confer a right to
+redistribute a reformatted copy.
+
+### The design that was rejected
+
+The first proposal was a fetcher: a registry of datasets with URLs, checksums and
+license summaries, which would download a restricted set, convert it locally, and
+write it into the user's `data_dir` after an on-screen license acknowledgement.
+It was rejected on three grounds, and the reasoning is worth keeping because the
+idea is superficially attractive:
+
+1. **The acknowledgement is theatre.** A prompt cannot create permission the
+   rightsholder never granted. Shipping one would make the project appear to
+   bless an ambiguous use it is in no position to bless.
+2. **It would not have delivered what it claimed.** The proposed home, `bench/`,
+   is in neither the wheel nor the sdist, so no `pip install` user would ever
+   have received it. Calling that "multilingual support" would have been an
+   overstatement.
+3. **It is a dataset package manager.** URLs, converters, cache rules, checksum
+   drift and licensing claims all become supported surface — permanent
+   maintenance in exchange for routing around missing permission.
+
+Two claims in the original reasoning were also **too strong** and are corrected
+here: CC BY-NC-ND expressly permits format and technical changes, so a pure
+TSV projection is not obviously a forbidden derivative; and NC data can coexist
+with BSD code given clear separation, so "legally impossible" was wrong — it is
+project *policy* that the wheel stays cleanly licensed, which is a different and
+more honest claim.
+
+### What was done instead
+
+Bundle only sources whose permissive license is **evidenced on the artifact
+itself** — not in a paper footer, not in a repository license covering code, not
+in a third-party package's license:
+
+| Language | Dataset | Rows | License | Where the license was read |
+|---|---|---:|---|---|
+| `sv` | SuperSim (similarity) | 1280 | CC BY 4.0 | `readme.txt` inside the distributed zip |
+| `sv` | SuperSim (relatedness) | 1280 | CC BY 4.0 | same |
+| `da` | WordSim-353 (Danish) | 316 | CC-BY | the dataset directory's own `LICENSE` file |
+
+The importer is `tools/import_eval_data/import_ws.py` — a maintainer tool,
+outside the wheel, pinned by source SHA-256, never run at install or eval time.
+It selects the two word columns and the published aggregate score and **never
+recomputes, rescales or re-averages a score**. Rows are dropped only where the
+unigram scorer forces it (multi-token, self-pair, duplicate), plus, for Danish,
+the 34 rows the translator himself flagged as doubtful translations. Every drop
+is counted in the emitted `#` preamble, so a bundled file never silently reports
+a smaller row count than its source.
+
+**Stated limitation, not buried:** the Danish scores are the *original English*
+human ratings carried over with translated pairs — they were not re-elicited
+from Danish speakers. This is recorded in that file's preamble.
+
+The dataset linter's language list is now discovered from the filesystem rather
+than hardcoded, so a future language cannot be added without being linted.
+
+### Consequence for the roadmap
+
+Coverage is capped by licensing, and the remaining permissively-licensed
+general-language sets are few and small. Chasing more of them has poor returns
+for a package aimed at **small, domain-specific** corpora — where a
+general-language set is largely out-of-vocabulary anyway. `data_dir` remains the
+answer for everything not bundled, and it is the user, not this project, who can
+assess their own use of a restricted source.
+
+The higher-value direction is **P4** (objective domain proxy tasks), which
+measures what this package's audience actually cares about. One CC0 candidate
+noted during the survey is worth revisiting there rather than here:
+Bio-SimLex/Bio-SimVerb, human-rated *biomedical domain* similarity — its CC0
+status was found stated in the article and still needs artifact-level
+verification before any use.
+
+*Informed by a critical design review from GPT/codex, which is what identified
+the fetcher as over-engineered, caught the article-versus-dataset license
+conflation, and named the permissive candidates that were then verified
+independently.*
