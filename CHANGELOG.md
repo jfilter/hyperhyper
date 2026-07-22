@@ -7,6 +7,21 @@ Everything below is user-visible; several items change numeric results.
 
 ### Added
 
+-   **Tokenization no longer starts a process pool that makes it slower.** The
+    pool was gated on a fixed `PARALLEL_MIN_CHARS = 2_000_000`, but the
+    measurements recorded next to that constant show the pool losing at *every*
+    size tested, up to 163M characters -- so every corpus above a couple of
+    megabytes paid ~3s of spawn startup to tokenize more slowly. Re-measured with
+    the v2 tokenizer: 6.6M chars 0.42s serial vs 2.91s pooled; 52.5M chars 3.72s
+    vs 5.07s. The decision is now *measured* (sample, extrapolate, require a
+    margin) the same way `count_pairs` already decides, so it self-calibrates
+    instead of being quietly wrong. On a 1.5M-token corpus this cuts corpus
+    construction from 4.05s to 1.73s and a full corpus->count->PMI->SVD->evaluate
+    run from 12.41s to 10.04s (**19% end to end**).
+
+    Scheduling never affected the result -- `map_pool` preserves order and the
+    tokenizer is pure -- so no score or matrix changes.
+
 -   **A dead worker now explains itself.** A script without an
     `if __name__ == "__main__":` guard makes every spawned worker re-run the
     script from the top — including the `hyperhyper` call that started the pool —

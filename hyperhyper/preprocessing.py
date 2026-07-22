@@ -6,11 +6,12 @@ import logging
 import multiprocessing
 import re
 import sys
+import time
 import unicodedata
 
 from tqdm import tqdm
 
-from .utils import map_pool
+from .utils import _default_workers, map_pool
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,110 @@ def _preprocess_string(s, filters):
 # -- it used to spawn 12 pools per `eval_similarity` (~41s) to do ~0.09s of
 # tokenization.
 PARALLEL_MIN_CHARS = 2_000_000
+
+# The threshold above turned out to be far too low, and the table above says why
+# without having drawn the conclusion: the pool is a *net loss at every size that
+# was measured*, including 163M characters -- yet 2M lets it run, and at exactly
+# 2M the same table records serial 0.075s against pool 3.870s. Every corpus
+# larger than a couple of megabytes therefore paid ~3s of spawn startup to make
+# tokenization slower.
+#
+# Re-measured with `tokenize_string_v2` on synthetic Zipfian text (M1 Pro, 10
+# workers, Python 3.12):
+#
+#      6.6M chars   serial 0.42s   pool 2.91s
+#     26.2M chars   serial 1.80s   pool 3.52s
+#     52.5M chars   serial 3.72s   pool 5.07s
+#
+# The gap narrows but does not close: extrapolating the two slopes puts
+# break-even beyond 100M characters, which for a package aimed at *small,
+# domain-specific* corpora is never. The cost is not the tokenizing, it is
+# shipping every string to a worker and every token list back.
+#
+# So the decision is no longer a fixed character count. It is measured, the same
+# way `pair_counts._pool_is_worth_starting` measures it: tokenize a sample,
+# extrapolate, and only start a pool if it beats serial by a margin. That
+# self-calibrates on machines and text this table never saw, and it cannot go on
+# being quietly wrong.
+#
+# Scheduling has no effect on the *result*: `map_pool` preserves order and the
+# tokenizer is a pure function, so serial and pooled output are identical.
+
+# What a pool costs before it tokenizes anything -- dominated by each spawned
+# child importing the package. Same measurement as `pair_counts`.
+POOL_STARTUP_SECONDS = 3.0
+
+# How much faster the pool must look before it is worth starting.
+POOL_SPEEDUP_MARGIN = 1.3
+
+# Texts tokenized in-process to estimate the per-text cost: enough to be above
+# timer noise, few enough to be a rounding error on any corpus where the answer
+# is not already obvious.
+PROBE_TEXTS = 2000
+
+
+def _pool_is_worth_starting(texts, tokenizer):
+    """
+    Whether tokenizing `texts` across a process pool beats doing it here.
+
+    Measured rather than derived from a character count, because the per-character
+    cost is not a property of the corpus: it swings with text shape (many short
+    lines cost more per character than few long ones) and with the tokenizer.
+    """
+    workers = _default_workers()
+    if len(texts) < 2 or workers < 2:
+        return False
+
+    # Sample with a stride rather than taking the first N: a corpus is very
+    # often ordered (by document, by date, by source), so its head is not a fair
+    # sample of it. Probing `texts[:N]` of a corpus whose short headlines come
+    # first would underestimate the work and refuse a pool that was worth
+    # starting -- and the reverse for a corpus that opens with long documents.
+    step = max(1, len(texts) // PROBE_TEXTS)
+    sample = texts[::step][:PROBE_TEXTS]
+    start = time.perf_counter()
+    for t in sample:
+        tokenizer(t)
+    elapsed = time.perf_counter() - start
+    if elapsed == 0:
+        return False
+
+    serial = elapsed / len(sample) * len(texts)
+    # `serial / workers` is the *optimistic* bound: it counts the tokenizing but
+    # not the cost of shipping every string to a worker and every token list
+    # back, which the measurements above show to be the dominant term for this
+    # workload. The estimate is therefore biased towards the pool, and
+    # `POOL_SPEEDUP_MARGIN` is what keeps that bias from deciding marginal cases.
+    parallel = POOL_STARTUP_SECONDS + serial / min(workers, len(texts))
+    logger.debug(
+        "tokenizing %d texts: serial ~%.2fs, pool ~%.2fs", len(texts), serial, parallel
+    )
+    return parallel * POOL_SPEEDUP_MARGIN < serial
+
+
+def _should_pool(texts, tokenizer):
+    """
+    The single place that decides serial vs pool for tokenization.
+
+    Three gates, cheapest first:
+
+    1. **Inside a worker** -- never. `Corpus.from_text_files` already runs the
+       tokenizer in a pool of `workers` processes, so nesting would ask for
+       `workers ** 2`.
+    2. **Below `PARALLEL_MIN_CHARS`** -- never, without measuring. This keeps
+       the common small case (the evaluation preprocesses one dataset column at
+       a time) from paying even for the probe.
+    3. **Otherwise, measured** -- see `_pool_is_worth_starting`.
+
+    All three are scheduling only: `map_pool` preserves order and the tokenizer
+    is pure, so the tokens are identical whichever way this goes.
+    """
+    if multiprocessing.parent_process() is not None:
+        return False
+    if sum(len(t) for t in texts) < PARALLEL_MIN_CHARS:
+        return False
+    return _pool_is_worth_starting(texts, tokenizer)
+
 
 # spaCy is imported lazily, not at module import time: it costs ~2.2s, it is
 # only ever needed by `texts_to_sents`, and every process-pool child that
@@ -154,10 +259,7 @@ def tokenize_texts_parallel(texts):
     if not hasattr(texts, "__len__"):
         texts = list(texts)
 
-    if multiprocessing.parent_process() is not None:
-        return tokenize_texts(texts)
-
-    if sum(len(t) for t in texts) < PARALLEL_MIN_CHARS:
+    if not _should_pool(texts, tokenize_string):
         return tokenize_texts(texts)
 
     return map_pool(texts, tokenize_string)
@@ -263,10 +365,7 @@ def tokenize_texts_parallel_v2(texts):
     if not hasattr(texts, "__len__"):
         texts = list(texts)
 
-    if multiprocessing.parent_process() is not None:
-        return tokenize_texts_v2(texts)
-
-    if sum(len(t) for t in texts) < PARALLEL_MIN_CHARS:
+    if not _should_pool(texts, tokenize_string_v2):
         return tokenize_texts_v2(texts)
 
     return map_pool(texts, tokenize_string_v2)

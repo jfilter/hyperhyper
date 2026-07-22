@@ -885,6 +885,7 @@ def test_parallel_preprocessing_does_not_change_any_score(
     assert count_pools == []
 
     monkeypatch.setattr(preprocessing, "PARALLEL_MIN_CHARS", 0)
+    monkeypatch.setattr(preprocessing, "_pool_is_worth_starting", lambda *_: True)
     pooled = evaluation.eval_similarity(
         toy_embedding, TOKEN2ID, tokenize_texts_parallel, lang="en"
     )

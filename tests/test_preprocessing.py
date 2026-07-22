@@ -13,6 +13,7 @@ Two things are pinned here, both of which used to cost seconds per call:
 
 import subprocess
 import sys
+import time
 import unicodedata
 from concurrent import futures
 
@@ -167,11 +168,12 @@ def test_small_input_does_not_spawn_a_pool(pool_calls):
 
 def test_large_input_still_uses_the_pool(monkeypatch, pool_calls):
     """
-    The threshold must not quietly delete the parallel path that large corpora
-    rely on. Lowering it is equivalent to handing in a huge input, without
-    building one.
+    The decision must not quietly delete the parallel path that large corpora
+    rely on. Forcing the verdict is equivalent to handing in an input big enough
+    for the pool to pay, without building one.
     """
     monkeypatch.setattr(preprocessing, "PARALLEL_MIN_CHARS", 1)
+    monkeypatch.setattr(preprocessing, "_pool_is_worth_starting", lambda *_: True)
 
     result = tokenize_texts_parallel(TEXTS)
 
@@ -180,14 +182,60 @@ def test_large_input_still_uses_the_pool(monkeypatch, pool_calls):
     assert result == tokenize_texts(TEXTS)
 
 
-def test_threshold_counts_characters_not_items(monkeypatch, pool_calls):
+def test_character_threshold_short_circuits_before_measuring(monkeypatch, pool_calls):
+    """
+    Below `PARALLEL_MIN_CHARS` the decision is made without measuring at all --
+    the probe would otherwise cost more than tokenizing the whole input, which
+    is the small-input case this gate exists for. The threshold counts
+    characters, not items.
+    """
+    measured = []
+    monkeypatch.setattr(
+        preprocessing,
+        "_pool_is_worth_starting",
+        lambda *_: measured.append(1) or True,
+    )
     monkeypatch.setattr(preprocessing, "PARALLEL_MIN_CHARS", 100)
 
     tokenize_texts_parallel(["a b c"] * 5)  # 25 chars, way under
     assert pool_calls == []
+    assert measured == []  # not even probed
 
-    tokenize_texts_parallel(["x" * 60] * 2)  # 120 chars, over
+    tokenize_texts_parallel(["x" * 60] * 2)  # 120 chars, over -> now measured
+    assert measured == [1]
     assert len(pool_calls) == 1
+
+
+def test_pool_is_refused_when_it_would_not_pay(monkeypatch, pool_calls):
+    """
+    The bug this replaced: `PARALLEL_MIN_CHARS` alone let every corpus over a
+    couple of megabytes into a pool that was measured to be a NET LOSS at every
+    size up to 163M characters -- paying ~3s of spawn startup to make
+    tokenization slower. Clearing the character gate must not be enough; the
+    work has to actually be worth distributing.
+    """
+    monkeypatch.setattr(preprocessing, "PARALLEL_MIN_CHARS", 1)
+
+    result = tokenize_texts_parallel(TEXTS)
+
+    assert pool_calls == []  # a handful of short strings: nowhere near worth it
+    assert result == tokenize_texts(TEXTS)
+
+
+def test_pool_verdict_scales_with_the_measured_cost(monkeypatch):
+    """
+    The verdict is measured, not derived from a size: a tokenizer slow enough
+    that distributing it beats a ~3s pool startup is accepted, the same input
+    with a fast one is refused.
+    """
+    texts = ["a b c"] * 5000
+
+    def slow(text):
+        time.sleep(0.001)
+        return text.split()
+
+    assert preprocessing._pool_is_worth_starting(texts, slow) is True
+    assert preprocessing._pool_is_worth_starting(texts, str.split) is False
 
 
 def test_accepts_an_iterator(pool_calls):
@@ -238,3 +286,29 @@ def test_a_disabled_spacy_is_not_re_imported(monkeypatch):
 
     assert preprocessing._import_spacy() is None
     assert preprocessing.spacy is None
+
+
+def test_pool_probe_samples_across_the_input(monkeypatch):
+    """
+    A corpus is usually ordered -- by document, by date, by source -- so its head
+    is not a fair sample of it. Probing only `texts[:N]` of a corpus that opens
+    with short lines and ends with long ones would underestimate the work and
+    refuse a pool worth starting.
+    """
+    seen = []
+
+    def record(text):
+        seen.append(text)
+        return text.split()
+
+    monkeypatch.setattr(preprocessing, "PROBE_TEXTS", 10)
+    texts = [f"t{i}" for i in range(1000)]
+    preprocessing._pool_is_worth_starting(texts, record)
+
+    assert len(seen) == 10
+    # spread across the input rather than taken from its head: a stride of
+    # `len // PROBE_TEXTS` reaches the last decile, where `texts[:10]` would
+    # never leave the first percent
+    assert seen[0] == "t0"
+    assert seen[-1] == "t900"
+    assert seen == [f"t{i}" for i in range(0, 1000, 100)]
