@@ -3,6 +3,7 @@ apply SVD on a PPMI matrix to get low-dimensional word embeddings
 """
 
 import heapq
+import inspect
 import logging
 
 import numpy as np
@@ -25,6 +26,28 @@ except ImportError:
 # ``mul_sim = sa_ * sb * np.reciprocal(sa + 0.01)`` -- i.e. 0.01, *not* the
 # 0.001 that some descriptions of 3CosMul quote.
 COSMUL_EPS = 0.01
+
+# Every backend draws a random start (ARPACK's `v0`, the randomized range
+# finders' test matrix), by default from global or OS-seeded state, so the same
+# matrix factorized twice gave different bits. Each backend's own seed parameter
+# is set from this unless `impl_args` sets it.
+SVD_SEED = 1312
+
+
+# `svds` renamed `random_state` to `rng` within the supported scipy range
+_SCIPY_SEED_PARAM = (
+    "rng" if "rng" in inspect.signature(svds).parameters else "random_state"
+)
+
+
+def _scipy_seed_args(solver, n):
+    """
+    The `svds` argument seeding `solver`. ARPACK gets `v0`, drawn as `svds`
+    draws it, which every scipy version reads alike; LOBPCG and PROPACK draw more.
+    """
+    if solver in (None, "arpack"):
+        return {"v0": np.random.default_rng(SVD_SEED).standard_normal(n)}
+    return {_SCIPY_SEED_PARAM: SVD_SEED}
 
 
 def calc_svd(matrix, dim, impl, impl_args):
@@ -104,6 +127,11 @@ def calc_svd(matrix, dim, impl, impl_args):
     dim = min(dim, max_dim)
 
     if impl == "scipy":
+        if not {"v0", "rng", "random_state"} & impl_args.keys():
+            impl_args = {
+                **impl_args,
+                **_scipy_seed_args(impl_args.get("solver"), max_dim + 1),
+            }
         ut, s, vt = svds(matrix.m, k=dim, **impl_args)
         # `svds` returns the singular values ascending, `gensim`/`scikit` return
         # them descending. SVDEmbedding is insensitive to the order (it scales
@@ -116,7 +144,12 @@ def calc_svd(matrix, dim, impl, impl_args):
     # randomized (but fast) truncated SVD
     elif impl == "gensim":
         # better default arguments
-        args = {"power_iters": 5, "extra_dims": 10, **impl_args}
+        args = {
+            "power_iters": 5,
+            "extra_dims": 10,
+            "random_seed": SVD_SEED,
+            **impl_args,
+        }
         ut, s = stochastic_svd(matrix.m, dim, matrix.m.shape[0], **args)
         # `stochastic_svd` returns only `(U, s)`; recover the right singular
         # vectors so the `w+c` representation works on this backend too.
@@ -126,7 +159,8 @@ def calc_svd(matrix, dim, impl, impl_args):
             raise ImportError(
                 "impl='scikit' requires scikit-learn: pip install 'hyperhyper[full]'"
             )
-        ut, s, vt = randomized_svd(matrix.m, dim, **impl_args)
+        args = {"random_state": SVD_SEED, **impl_args}
+        ut, s, vt = randomized_svd(matrix.m, dim, **args)
     else:
         raise ValueError(f"unknown SVD impl: {impl!r}")
 
@@ -155,11 +189,12 @@ def _drop_negligible_components(ut, s, vt, m):
     Discard singular vectors whose singular value is numerical noise.
 
     When ``dim`` exceeds the matrix's numerical rank, the surplus singular values
-    are ~0 and their singular *vectors* are arbitrary null-space directions: a
-    different one every time, because ``svds`` (ARPACK) starts from an unseeded
-    random vector. Under the default ``eig=0`` ``SVDEmbedding`` uses those columns
-    verbatim, so the same matrix and parameters gave *different* nearest
-    neighbours run to run, and the three backends disagreed.
+    are ~0 and their singular *vectors* are arbitrary null-space directions,
+    which ones depending on the backend and its random start. Under the default
+    ``eig=0`` ``SVDEmbedding`` uses those columns verbatim, so the same matrix and
+    parameters gave *different* nearest neighbours run to run, and the three
+    backends disagreed. (Superseded in part: ``SVD_SEED`` now fixes each
+    backend's start, so runs repeat; the backends still disagree without this.)
 
     Dropping the negligible columns -- matching gensim's own truncation -- makes
     ``eig=0`` deterministic (pairwise similarities are invariant to the

@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+The SVD gives the same bits every time it runs.
+
+> **SVD results move once.** Every backend used to start from an unseeded
+> random vector, so two runs on the same matrix already differed (singular
+> values by up to 1e-4 relative, cosines by 4e-6 on a 5001x5001 PPMI matrix).
+> They are now seeded; cached SVD files keep their old values, a new run
+> lands on a different but repeatable point within that spread.
+
+### Changed
+
+-   **The SVD is deterministic.** `svd.SVD_SEED` seeds ARPACK's `v0` (the
+    other `svds` solvers through its own seed argument), gensim's `random_seed`
+    and scikit-learn's `random_state`; a seed in `impl_args` wins. Bits
+    repeat on the same machine and BLAS thread count; a different BLAS
+    configuration agrees to floating-point tolerance only.
+
+### Performance
+
+-   No faster exact SVD was found. At `dim=300` on PPMI matrices of 5001² and
+    20001² (1.5M nonzeros), ARPACK in float64, a larger `ncv`, CSC input,
+    PROPACK and LOBPCG were all within this machine's ±35% noise or slower;
+    PROPACK and LOBPCG also returned visibly different vectors at default
+    tolerances.
+
 ## 0.3.1 - 2026-10-27
 
 Building a corpus is 1.8x faster, and counting an in-memory corpus now fails

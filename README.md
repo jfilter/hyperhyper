@@ -187,7 +187,8 @@ tests and respect the correctness gate around the counting code.
 
 -   **SVD is the largest stage.** On 1.7M synthetic tokens (`window=2`,
     `dim=300`), building the corpus takes 1.4s, counting and PMI 1.4s, and the
-    SVD 4.5s. `bench/bench_svd.py` measures the backends and their knobs.
+    SVD 4.5s. `bench/bench_svd.py` measures the backends and their knobs; no
+    ARPACK, PROPACK or LOBPCG variant was measurably faster than the default.
 -   **`corpus.pkl` is the last pickle in a bunch directory.** It carries
     `preproc_func` by reference, so replacing it needs another way for a bunch
     to carry its tokenizer ([ADR 0002](./docs/adr/0002-tokenization-and-storage.md)).

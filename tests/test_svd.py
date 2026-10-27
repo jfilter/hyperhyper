@@ -88,6 +88,55 @@ def test_rank_deficient_eig0_is_deterministic_across_runs():
         np.testing.assert_array_equal(run, runs[0], err_msg=f"run {i} differs")
 
 
+@pytest.mark.parametrize("impl", IMPLS)
+def test_repeated_factorization_is_bit_identical(impl):
+    # every backend used to draw its random start from global or OS-seeded state
+    rng = np.random.default_rng(2)
+    matrix = wrap(rng.random((60, 60)).astype(np.float32))
+    np.random.seed(1)
+    first = calc_svd(matrix, 10, impl, {})
+    np.random.seed(2)
+    second = calc_svd(matrix, 10, impl, {})
+    for a, b in zip(first, second, strict=True):
+        np.testing.assert_array_equal(a, b)
+
+
+@pytest.mark.parametrize("solver", ["arpack", "propack", "lobpcg"])
+def test_every_scipy_solver_repeats_on_a_tall_matrix(solver):
+    # PROPACK wants a `v0` of n_rows, LOBPCG ignores `v0` for k > 1: both are
+    # seeded through `svds`'s own seed argument instead
+    rng = np.random.default_rng(3)
+    matrix = wrap(rng.random((80, 50)).astype(np.float32))
+    runs = []
+    for global_seed in (1, 2):
+        np.random.seed(global_seed)
+        try:
+            runs.append(calc_svd(matrix, 5, "scipy", {"solver": solver}))
+        except ValueError as e:
+            if "SCIPY_USE_PROPACK" not in str(e):
+                raise
+            pytest.skip("this scipy enables PROPACK only via SCIPY_USE_PROPACK")
+    for a, b in zip(*runs, strict=True):
+        np.testing.assert_array_equal(a, b)
+
+
+@pytest.mark.parametrize(
+    "impl,seed_args",
+    [
+        ("scipy", {"v0": np.ones(60)}),
+        ("gensim", {"random_seed": 7}),
+        ("scikit", {"random_state": 7}),
+    ],
+)
+def test_a_seed_in_impl_args_wins(impl, seed_args):
+    rng = np.random.default_rng(2)
+    matrix = wrap(rng.random((60, 60)).astype(np.float32))
+    default = calc_svd(matrix, 10, impl, {})[0]
+    seeded = calc_svd(matrix, 10, impl, seed_args)[0]
+    assert not np.array_equal(default, seeded)
+    np.testing.assert_array_equal(seeded, calc_svd(matrix, 10, impl, seed_args)[0])
+
+
 def test_impls_agree_on_a_rank_deficient_matrix():
     """
     The other half of BUG 1: once the noise columns are dropped, all three

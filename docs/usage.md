@@ -281,6 +281,12 @@ matrix. This is usually what you want.
   `power_iters`/`extra_dims` for `"gensim"` (which this package already defaults
   to `power_iters=5, extra_dims=10`). See the table above.
 
+  Every backend starts from a random vector or matrix, seeded from
+  `svd.SVD_SEED` unless `impl_args` sets `v0`, `rng` or `random_state`
+  (`"scipy"`), `random_seed` (`"gensim"`) or `random_state` (`"scikit"`). The same matrix therefore gives
+  the same bits on the same machine; a different BLAS or BLAS thread count
+  agrees only to floating-point tolerance.
+
 ### Return values
 
 The return shape depends on `evaluate`:
