@@ -7,6 +7,8 @@ name = "hyperhyper"
 version = "0.3.0"
 description = "Python package to construct word embeddings for small data"
 readme = "README.md"
+# <3.14 because gensim (4.4.0) ships no cp314 wheel and its sdist fails to
+# compile `word2vec_inner` on 3.14; lift it once gensim publishes cp314 wheels.
 requires-python = ">=3.10,<3.14"
 license = "BSD-2-Clause"
 license-files = ["LICENSE"]

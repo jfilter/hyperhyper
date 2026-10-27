@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Performance
+
+-   **Building a corpus is 1.8x faster, with identical output.** Measured with
+    the new `bench/bench_corpus.py` on 120k synthetic sentences (11M chars):
+    tokenizing 1.12s to 0.39s, the vocabulary 0.78s to 0.54s, and the
+    unchanged id mapping 0.27s, so 2.17s to 1.20s in all.
+    -   `tokenize_string_v2` folded Unicode hyphens with a dict-table
+        `str.translate`, which looks up every character in Python and was two
+        thirds of the tokenizer's time. It now uses one `str.replace` per hyphen.
+        A test pins it against the original definition on adversarial Unicode
+        (combining marks, final sigma, dotted I, every folded dash).
+    -   `Vocab` overrides gensim's `add_documents` with a `Counter`-based tally
+        that keeps gensim's id assignment and pruning checkpoints. The result is
+        compared against gensim's own `Dictionary` in `tests/test_vocab.py`; the
+        ids matter, because `filter_extremes` breaks ties by id.
+-   Swapping the tokenizer engine does not help (one-off measurement on the
+    same text, not kept as a harness): the third-party `regex` module
+    was 1.4x slower than the standard library's `re` on the same pattern, and
+    Hugging Face `tokenizers` 5.8x slower, per-text Python overhead dominating.
+
 ### Fixed
 
 -   **Counting an in-memory corpus now says what to do instead of raising from
@@ -605,6 +625,11 @@ Measured by profiling a 250k-sentence corpus, which refuted the assumption the
 work started from: `count_pairs` is 8.6% of a `bunch.svd()` and the per-token
 loop ~24% of that, so ~2% end to end. The two real costs were the SVD (54%)
 and evaluation (28%).
+
+> **Superseded.** Re-measured on a 1.5M-token corpus (`window=2`,
+> `dynamic_window="deter"`, M1 Pro), counting was 28.2% of a full run, and
+> `cProfile` put ~85% of it in the pure-Python loop -- the case 0.3.0's
+> vectorization was built on.
 
 -   **Evaluation no longer spawns a process pool per preprocessing call.** It
     spawned 12, each child re-importing the package, to perform 0.07s of

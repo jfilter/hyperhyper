@@ -1,6 +1,6 @@
 # ADR 0001 — Evaluation data strategy
 
-- **Status:** Proposed
+- **Status:** Accepted; roadmap implemented 2026-07-22
 - **Date:** 2026-07-22
 - **Deciders:** maintainer
 - **Informed by:** an internal review with two independent models, plus direct

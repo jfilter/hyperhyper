@@ -1,6 +1,6 @@
 # ADR 0002 — Tokenization and on-disk storage
 
-- **Status:** Proposed
+- **Status:** Accepted; roadmap implemented 2026-07-22 except `corpus.pkl` (item 7)
 - **Date:** 2026-07-22
 - **Deciders:** maintainer
 - **Informed by:** two independent model reviews, preserved verbatim as annexes
