@@ -40,9 +40,10 @@ not a tolerance to widen.
 ## Measure before you optimize
 
 Several documented performance beliefs here were wrong when measured (e.g. the
-tokenization pool was 5.6x *slower* than serial). Use `bench/bench_pair_counts.py`
-and `bench/bench_svd.py`. **This machine is ±35% noisy**: alternate A/B ordering
-and compare medians — back-to-back same-order runs manufacture regressions.
+tokenization pool was 5.6x *slower* than serial). Use `bench/bench_pair_counts.py`,
+`bench/bench_corpus.py` and `bench/bench_svd.py`. **This machine is ±35% noisy**:
+alternate A/B ordering and compare medians — back-to-back same-order runs
+manufacture regressions.
 Quote `best` and report the noise level.
 
 ## Conventions and boundaries
