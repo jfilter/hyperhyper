@@ -41,8 +41,8 @@ from. **All four now default to the same lightweight tokenizer**
 > model). They now default to the lightweight `tokenize_texts_parallel_v2`, so the
 > package is "lightweight by default" on every constructor. This changes the
 > vocabulary — and therefore every similarity/analogy number — for **new** corpora
-> built with the default; existing bunches are unaffected (they pickle their
-> tokenizer by reference, under its old name). The spaCy path is unchanged and
+> built with the default; existing bunches are unaffected (they store their
+> tokenizer by name, under its old name). The spaCy path is unchanged and
 > still available: pass `preproc_func=texts_to_sents` explicitly. Note this for the
 > CHANGELOG as a breaking evaluation change.
 
@@ -109,10 +109,11 @@ way — as a user-supplied callable, not a built-in class hierarchy or registry.
 Two hard requirements, both because the function is *stored and shipped*, not just
 called:
 
-- **It must be a picklable, top-level function.** The chosen `preproc_func` is
-  saved into `corpus.pkl` (by module + qualified name) and sent across process
-  pools. A `lambda`, a nested function, or a `functools.partial` breaks both — use
-  a module-level `def`. To run a built-in with non-default options, wrap it:
+- **It must be an importable, top-level function.** The chosen `preproc_func` is
+  saved into `corpus.json` (as module + qualified name) and sent across process
+  pools. A `lambda`, a nested function, or a `functools.partial` is refused with a
+  `TypeError` when the bunch is written — use a module-level `def`. To run a
+  built-in with non-default options, wrap it:
 
   ```python
   # tokenizers.py  (a real importable module)
@@ -143,7 +144,9 @@ Bunch(path, corpus=None, force_overwrite=False, text_chunk_size=None)
 
 A `Bunch` is a directory on disk. Creating one with a `corpus` writes the corpus
 and its text chunks under `path`. Reopening an existing bunch is
-`Bunch(path)` — omit the corpus, and it is loaded back from `path/corpus.pkl`.
+`Bunch(path)` — omit the corpus, and it is loaded back from `path/corpus.json`
+(a bunch written by 0.3.1 or earlier has a `corpus.pkl` instead, which is still
+read). Chunk paths are stored relative to `path`, so a bunch directory can be moved.
 
 - `force_overwrite=True` replaces an existing bunch (it requires a `corpus`, so it
   cannot accidentally delete a bunch you meant to reopen).
@@ -162,12 +165,12 @@ previous entry intact rather than a truncated file the next run would try to
 load.
 
 > **A bunch directory is a trusted local cache. Never open one from an untrusted
-> source.** `corpus.pkl` and the text chunks are Python pickles, and unpickling
-> executes code by design — opening somebody else's bunch is equivalent to
-> running their program. This is a property of the format, not a bug with a
-> patch: it is why the bunch directory is documented as *your* cache, to be
-> regenerated from your own texts rather than downloaded. (The `.npz` matrices
-> are loaded with `allow_pickle=False`, so those cannot execute anything.)
+> source.** `corpus.json` names the tokenizer that is imported and called on
+> every evaluation, and bunches from 0.3.1 or earlier hold Python pickles
+> (`corpus.pkl`, `texts_N.pkl`), which execute code when read. Opening somebody
+> else's bunch is therefore equivalent to running their program: the bunch
+> directory is *your* cache, to be regenerated from your own texts rather than
+> downloaded. (The `.npz` files are loaded with `allow_pickle=False`.)
 
 ## Getting embeddings: `pmi` and `svd`
 

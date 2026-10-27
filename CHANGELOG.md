@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-The SVD gives the same bits every time it runs.
+A bunch directory no longer holds any pickle, and the SVD gives the same bits
+every time it runs.
 
 > **SVD results move once.** Every backend used to start from an unseeded
 > random vector, so two runs on the same matrix already differed (singular
@@ -12,6 +13,12 @@ The SVD gives the same bits every time it runs.
 
 ### Changed
 
+-   **`corpus.json` replaces `corpus.pkl`.** It stores the tokenizer by module
+    and qualified name (what the pickle stored by reference) and the chunk paths
+    relative to the bunch, so a bunch directory can be moved. A `preproc_func`
+    that has no importable name (a lambda, a nested function, a
+    `functools.partial`) is refused with a `TypeError`. Existing bunches keep
+    their `corpus.pkl`, which is still read and never rewritten.
 -   **The SVD is deterministic.** `svd.SVD_SEED` seeds ARPACK's `v0` (the
     other `svds` solvers through its own seed argument), gensim's `random_seed`
     and scikit-learn's `random_state`; a seed in `impl_args` wins. Bits

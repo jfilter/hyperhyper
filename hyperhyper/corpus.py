@@ -2,6 +2,8 @@
 represent a collection of texts
 """
 
+import importlib
+import json
 import logging
 import random
 from array import array
@@ -16,6 +18,7 @@ from tqdm import tqdm
 from .preprocessing import tokenize_texts_parallel_v2
 from .utils import (
     _default_workers,
+    atomic_path,
     chunks,
     dsum,
     load_id_chunk,
@@ -25,6 +28,42 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Version of `corpus.json`; a reader refuses any other value.
+CORPUS_FORMAT = "corpus-v1"
+
+
+def _function_identity(f):
+    """
+    `{"module", "qualname"}` naming `f`, checked to resolve back to `f` itself.
+
+    The same contract pickle enforced by reference: a top-level, importable
+    function. A lambda, a nested function or a `functools.partial` is refused.
+    """
+    identity = {
+        "module": getattr(f, "__module__", None),
+        "qualname": getattr(f, "__qualname__", None),
+    }
+    message = (
+        f"preproc_func {f!r} cannot be stored by name: it must be a top-level "
+        f"function importable as module + qualified name (not a lambda, a "
+        f"nested function or a functools.partial)"
+    )
+    try:
+        resolved = _resolve_function(identity)
+    except (ImportError, AttributeError, TypeError, ValueError) as e:
+        raise TypeError(message) from e
+    if resolved is not f:
+        raise TypeError(message)
+    return identity
+
+
+def _resolve_function(identity):
+    """Import `identity["module"]` and walk `identity["qualname"]` inside it."""
+    obj = importlib.import_module(identity["module"])
+    for part in identity["qualname"].split("."):
+        obj = getattr(obj, part)
+    return obj
 
 
 class Vocab(Dictionary):
@@ -282,6 +321,80 @@ class Corpus(SaveLoad):
             save_id_chunk(fn, c)
             fns.append(fn)
         self.texts = fns
+
+    def save_json(self, path):
+        """
+        Write the corpus as `corpus.json`: plain data, no pickle.
+
+        `preproc_fun` is stored as module + qualified name, exactly what pickle
+        stored by reference, and the text chunks relative to the file's
+        directory, so a bunch can be moved. The texts must already be on disk.
+        """
+        path = Path(path)
+        if not self.texts_are_on_disk():
+            raise ValueError("write the texts to disk first (`texts_to_file`)")
+        root = path.parent.resolve()
+        v = self.vocab
+        data = {
+            "format": CORPUS_FORMAT,
+            "lang": self.lang,
+            "size": self.size,
+            "vocab_size": self.vocab_size,
+            "preproc_fun": _function_identity(self.preproc_fun),
+            # `relative_to` raises for a chunk outside the bunch: no silent copy
+            "texts": [str(Path(t).resolve().relative_to(root)) for t in self.texts],
+            "counts": list(self.counts.items()),
+            "vocab": {
+                "token2id": list(v.token2id.items()),
+                "cfs": list(v.cfs.items()),
+                "dfs": list(v.dfs.items()),
+                "num_docs": v.num_docs,
+                "num_pos": v.num_pos,
+                "num_nnz": v.num_nnz,
+            },
+        }
+        with atomic_path(path) as tmp:
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    @staticmethod
+    def load_json(path):
+        """Read a corpus written by `save_json`."""
+        path = Path(path)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("format") != CORPUS_FORMAT:
+            raise ValueError(
+                f"{path}: unsupported corpus format {data.get('format')!r}, "
+                f"expected {CORPUS_FORMAT!r}"
+            )
+        vocab = Vocab()
+        v = data["vocab"]
+        vocab.token2id.update((t, i) for t, i in v["token2id"])
+        vocab.cfs.update((i, c) for i, c in v["cfs"])
+        vocab.dfs.update((i, c) for i, c in v["dfs"])
+        vocab.num_docs, vocab.num_pos, vocab.num_nnz = (
+            v["num_docs"],
+            v["num_pos"],
+            v["num_nnz"],
+        )
+
+        corpus = Corpus.__new__(Corpus)
+        corpus.vocab = vocab
+        corpus.vocab_size = data["vocab_size"]
+        corpus.lang = data["lang"]
+        identity = data["preproc_fun"]
+        try:
+            corpus.preproc_fun = _resolve_function(identity)
+        except (ImportError, AttributeError) as e:
+            raise ImportError(
+                f"{path}: the corpus was tokenized with "
+                f"{identity['module']}.{identity['qualname']}, which cannot be "
+                f"imported here; reopen the bunch where that function is importable"
+            ) from e
+        root = path.parent.resolve()
+        corpus.texts = [root / t for t in data["texts"]]
+        corpus.counts = defaultdict(int, ((i, c) for i, c in data["counts"]))
+        corpus.size = data["size"]
+        return corpus
 
     @staticmethod
     def from_file(input_path, limit=None, **kwargs):

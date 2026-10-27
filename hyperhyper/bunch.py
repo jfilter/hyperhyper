@@ -39,6 +39,10 @@ VALID_IMPLS = frozenset({"scipy", "gensim", "scikit"})
 # meaning has silently moved.
 CACHE_FORMAT = "v2"
 
+CORPUS_FILE = "corpus.json"
+# written by releases up to 0.3.1; still read, never written
+LEGACY_CORPUS_FILE = "corpus.pkl"
+
 # what may appear verbatim in the human-readable part of a cache file name
 _UNSAFE_IN_NAME = re.compile(r"[^0-9A-Za-z.=+-]+")
 
@@ -172,10 +176,12 @@ class Bunch:
                     "`force_overwrite=True` needs a `corpus` to replace the old one. "
                     "Reopening an existing bunch without a corpus would delete it."
                 )
-            self.corpus = Corpus.load(str(self.path / "corpus.pkl"))
+            self.corpus = self._load_corpus()
             return
 
-        if not force_overwrite and Path(self.path / "corpus.pkl").is_file():
+        if not force_overwrite and any(
+            (self.path / name).is_file() for name in (CORPUS_FILE, LEGACY_CORPUS_FILE)
+        ):
             raise ValueError(
                 "There is already another corpus file saved. Set `force_overwrite` to True if you want to override it."
             )
@@ -195,7 +201,19 @@ class Bunch:
         self.path.mkdir(parents=True, exist_ok=True)
         self.corpus = corpus
         self.corpus.texts_to_file(self.path / "texts", text_chunk_size)
-        self.corpus.save(str(self.path / "corpus.pkl"))
+        self.corpus.save_json(self.path / CORPUS_FILE)
+
+    def _load_corpus(self):
+        """
+        `corpus.json`, or a bunch's `corpus.pkl` from before it, read as is.
+
+        The pickle is only read, never rewritten in place; opening a bunch must
+        not change it.
+        """
+        if (self.path / CORPUS_FILE).is_file():
+            return Corpus.load_json(self.path / CORPUS_FILE)
+        # trusted-input-only, like every pickle in a bunch (see `utils.read_pickle`)
+        return Corpus.load(str(self.path / LEGACY_CORPUS_FILE))
 
     def get_db(self):
         """

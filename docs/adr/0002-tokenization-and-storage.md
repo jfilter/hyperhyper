@@ -1,6 +1,6 @@
 # ADR 0002 — Tokenization and on-disk storage
 
-- **Status:** Accepted; roadmap implemented 2026-07-22 except `corpus.pkl` (item 7)
+- **Status:** Accepted; roadmap implemented 2026-07-22, `corpus.pkl` (item 7) 2026-10-27
 - **Date:** 2026-07-22
 - **Deciders:** maintainer
 - **Informed by:** two independent model reviews, preserved verbatim as annexes
@@ -179,6 +179,13 @@ still shipped and became the legacy read path, so it was not wasted.
    is how existing bunches keep their tokenizer across the ADR's default flip, so
    any replacement has to answer that question first.
 
+   *(Superseded 2026-10-27.)* `corpus.json` replaces it, written without a
+   holistic format revision: the answer to the tokenizer question is to store the
+   same module + qualified name pickle stored, checked on write to resolve back
+   to the very function. Chunk paths are stored relative to the bunch, and an
+   existing `corpus.pkl` is still read and never rewritten. A new bunch holds no
+   pickle; the chunk names, and so the RNG seeds, are unchanged.
+
    The migration also surfaced a bug worth recording here: the per-chunk RNG was
    seeded from the chunk's full **filename**, so `texts_0.pkl` and `texts_0.npz`
    drew different numbers and the on-disk format was part of the answer. Any
@@ -193,4 +200,5 @@ still shipped and became the legacy read path, so it was not wasted.
 - **A heavy default tokenizer (spaCy/HF)** — rejected; betrays the package identity.
 - **Rewriting `corpus.pkl` / chunk pickles now** — deferred; it's a regenerable
   local cache, and a holistic bunch-format revision is the right scope for that,
-  not a piecemeal change.
+  not a piecemeal change. *(Superseded: both were replaced piecemeal, see
+  item 7.)*

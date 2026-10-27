@@ -319,10 +319,8 @@ def read_pickle(fn):
     **A bunch directory is a trusted local cache, never something to load from
     an untrusted source.** Unpickling executes code by design, so opening
     somebody else's bunch is equivalent to running their program. This is the
-    honest answer rather than a fixable flaw: the alternative (a pickle-free
-    on-disk format) was considered in ADR 0002 and deferred, because the chunk
-    files are a regenerable derived cache and reworking the bunch format
-    piecemeal is the wrong scope.
+    honest answer rather than a fixable flaw. Bunches written today hold no
+    pickles; this reads the `.pkl` chunks of older ones (ADR 0002).
     """
     with open(fn, "rb") as infile:
         return pickle.load(infile)
