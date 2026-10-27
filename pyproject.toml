@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hyperhyper"
-version = "0.3.0"
+version = "0.3.1"
 description = "Python package to construct word embeddings for small data"
 readme = "README.md"
 # <3.14 because gensim (4.4.0) ships no cp314 wheel and its sdist fails to

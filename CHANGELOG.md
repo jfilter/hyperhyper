@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 - 2026-10-27
+
+Building a corpus is 1.8x faster, and counting an in-memory corpus now fails
+with a message that says what to do.
+
+> **No reported numbers move.** The tokenizer and vocabulary changes produce
+> identical tokens, ids and frequencies, pinned by tests against the previous
+> definitions and against gensim. Every 0.3.0 result reproduces bit for bit.
 
 ### Performance
 
