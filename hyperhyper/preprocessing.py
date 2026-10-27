@@ -296,15 +296,11 @@ _CURLY_APOSTROPHE = "\u2019"
 # ASCII hyphen):
 #   U+2010 HYPHEN, U+2011 NON-BREAKING HYPHEN, U+2012 FIGURE DASH,
 #   U+2013 EN DASH, U+2014 EM DASH.
-_UNICODE_HYPHENS = str.maketrans(
-    {
-        "\u2010": "-",
-        "\u2011": "-",
-        "\u2012": "-",
-        "\u2013": "-",
-        "\u2014": "-",
-    }
-)
+#
+# Folded with one `str.replace` each: a dict-table `str.translate` looks up every
+# character in Python and measured at 66% of the whole tokenizer (0.71s of 1.07s
+# on 11M chars), five replaces at 0.02s for the same output (`bench_corpus.py`).
+_UNICODE_HYPHENS = ("\u2010", "\u2011", "\u2012", "\u2013", "\u2014")
 
 # Extraction pattern: a run of word chars, optionally continued across a single
 # apostrophe or hyphen into more word chars. Keeps `city's`, `ice-cream`,
@@ -333,7 +329,9 @@ def tokenize_string_v2(text, lower=True, normalize_digits=False):
     text = unicodedata.normalize("NFC", text)
     # canonicalize typographic variants before extraction so the joiner set
     # ("'" and "-") covers curly apostrophes and Unicode hyphens too
-    text = text.replace(_CURLY_APOSTROPHE, "'").translate(_UNICODE_HYPHENS)
+    text = text.replace(_CURLY_APOSTROPHE, "'")
+    for hyphen in _UNICODE_HYPHENS:
+        text = text.replace(hyphen, "-")
     if lower:
         text = text.lower()
     if normalize_digits:

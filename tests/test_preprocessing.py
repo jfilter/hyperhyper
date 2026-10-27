@@ -11,6 +11,8 @@ Two things are pinned here, both of which used to cost seconds per call:
   re-imports the module and used to pay for it.
 """
 
+import random
+import re
 import subprocess
 import sys
 import unicodedata
@@ -135,6 +137,41 @@ def test_tokenize_string_v2_lower_flag():
 def test_tokenize_string_v2_does_not_glue_across_dot():
     # `.` is not in the joiner set, so scraped `word.Next` stays two tokens
     assert tokenize_string_v2("word.Next sentence") == ["word", "next", "sentence"]
+
+
+def _frozen_tokenize_string_v2(text, lower=True, normalize_digits=False):
+    """`tokenize_string_v2` as first shipped, folding hyphens with `str.translate`."""
+    text = unicodedata.normalize("NFC", text)
+    text = text.replace("\u2019", "'").translate(
+        str.maketrans(dict.fromkeys("\u2010\u2011\u2012\u2013\u2014", "-"))
+    )
+    if lower:
+        text = text.lower()
+    if normalize_digits:
+        text = re.sub(r"\d", "0", text)
+    return re.findall(r"\w+(?:['\-]\w+)*", text)
+
+
+def _adversarial_texts(n, seed):
+    """Random strings over the code points where tokenizer rewrites go wrong."""
+    rng = random.Random(seed)
+    alphabet = (
+        "aZ09_ '-.\n\t<>"
+        "\u2019\u2010\u2011\u2012\u2013\u2014\u2015"  # folded dashes, plus one that is not
+        "\u0301\u0308e\u00e9\u00fc"  # combining marks next to letters NFC composes
+        "\u03a3\u03c3\u0130\u00df\ufb01"  # final sigma, dotted I, sharp s, ligature
+        "\u0663\u00bd\u2163"  # non-ASCII digits and numerics
+    )
+    return ["".join(rng.choices(alphabet, k=rng.randrange(40))) for _ in range(n)]
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"lower": False}, {"normalize_digits": True}])
+def test_tokenize_string_v2_matches_its_frozen_definition(kwargs):
+    # pickled by reference like v1, so any speed rewrite must keep the output
+    for text in _adversarial_texts(5000, seed=2026):
+        assert tokenize_string_v2(text, **kwargs) == _frozen_tokenize_string_v2(
+            text, **kwargs
+        ), repr(text)
 
 
 def test_tokenize_texts_v2_maps_over_the_list():
