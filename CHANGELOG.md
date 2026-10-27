@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-10-27
 
 A bunch directory no longer holds any pickle, and the SVD gives the same bits
 every time it runs.
